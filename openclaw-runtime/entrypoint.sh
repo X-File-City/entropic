@@ -106,33 +106,8 @@ if [ "$MEMORY_SLOT" = "memory-lancedb" ]; then
     fi
 fi
 
-MEMORY_BACKEND_BLOCK=""
-if [ "$MEMORY_SLOT" = "memory-core" ] && command -v qmd >/dev/null 2>&1; then
-    MEMORY_BACKEND_BLOCK=',
-  "memory": {
-    "backend": "qmd",
-    "citations": "auto",
-    "qmd": {
-      "command": "/data/qmd-wrapper",
-      "includeDefaultMemory": true,
-      "sessions": {
-        "enabled": true,
-        "retentionDays": 30
-      },
-      "update": {
-        "interval": "5m",
-        "debounceMs": 15000,
-        "onBoot": true,
-        "waitForBootSync": false,
-        "embedInterval": "60m"
-      },
-      "limits": {
-        "maxResults": 8,
-        "timeoutMs": 5000
-      }
-    }
-  }'
-fi
+# Note: The top-level "memory" config block was removed in OpenClaw >= 2026.1.29.
+# The memory-core plugin now handles memory search internally via api.runtime.tools.
 
 PLUGIN_ENTRIES="\"nova-integrations\": { \"enabled\": true }"
 ALSO_ALLOW="\"nova-integrations\""
@@ -229,7 +204,7 @@ if [ -n "${OPENCLAW_MODEL:-}" ]; then
     "entries": {
       ${PLUGIN_ENTRIES}
     }
-  }${MEMORY_BACKEND_BLOCK}${MODELS_BLOCK}${TOOLS_BLOCK}
+  }${MODELS_BLOCK}${TOOLS_BLOCK}
 }
 EOF
 fi

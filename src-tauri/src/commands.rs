@@ -768,40 +768,13 @@ fn write_openclaw_config(value: &serde_json::Value) -> Result<(), String> {
     write_container_file("/home/node/.openclaw/openclaw.json", &payload)
 }
 
-fn apply_default_qmd_memory_config(cfg: &mut serde_json::Value, slot: &str) {
-    if slot != "memory-core" {
-        if let Some(root) = cfg.as_object_mut() {
-            root.remove("memory");
-        }
-        return;
+fn apply_default_qmd_memory_config(cfg: &mut serde_json::Value, _slot: &str) {
+    // OpenClaw >= 2026.1.29 removed the top-level "memory" key from its config schema.
+    // The memory-core plugin now handles memory search internally via api.runtime.tools.
+    // Clean up any legacy "memory" block that might still be present.
+    if let Some(root) = cfg.as_object_mut() {
+        root.remove("memory");
     }
-
-    cfg["memory"]["backend"] = serde_json::json!("qmd");
-    cfg["memory"]["citations"] = serde_json::json!("auto");
-    // Use the runtime wrapper so qmd always has writable HOME/XDG paths and
-    // can start in lightweight BM25 mode before large local models are present.
-    cfg["memory"]["qmd"]["command"] = serde_json::json!("/data/qmd-wrapper");
-    cfg["memory"]["qmd"]["includeDefaultMemory"] = serde_json::json!(true);
-    cfg["memory"]["qmd"]["sessions"] = serde_json::json!({
-        "enabled": true,
-        "retentionDays": 30
-    });
-    cfg["memory"]["qmd"]["update"] = serde_json::json!({
-        "interval": "5m",
-        "debounceMs": 15000,
-        "onBoot": true,
-        "waitForBootSync": false,
-        "embedInterval": "60m",
-        "commandTimeoutMs": 30000,
-        "updateTimeoutMs": 120000,
-        "embedTimeoutMs": 120000
-    });
-    cfg["memory"]["qmd"]["limits"] = serde_json::json!({
-        "maxResults": 8,
-        "maxSnippetChars": 700,
-        "maxInjectedChars": 4000,
-        "timeoutMs": 5000
-    });
 }
 
 fn append_nova_skills_mount(docker_args: &mut Vec<String>) {
