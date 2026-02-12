@@ -532,45 +532,86 @@ impl Runtime {
             }
         }
 
-        // Build a shell command that sets up environment before running colima
-        // This ensures PATH is set BEFORE colima does its dependency check
-        // VZ (Virtualization.framework) is used for better performance on macOS 13+
-        // The app requires com.apple.security.virtualization entitlement (see entitlements.plist)
-        let shell_cmd = format!(
-            "export PATH=\"{}:$PATH\" && export LIMA_SHARE_DIR=\"{}\" && \"{}\" start --vm-type vz --cpu 2 --memory 4 --disk 20",
-            bin_dir.display(),
-            share_dir.join("lima").display(),
-            colima_path.display()
-        );
-        debug_log(&format!("shell_cmd: {}", shell_cmd));
+        // Try starting Colima, with retry after cleanup on failure.
+        // First attempt may fail due to stale state from a previous crash.
+        for attempt in 1..=2 {
+            debug_log(&format!("Colima start attempt {}/2", attempt));
 
-        // Run through shell to ensure environment is set before colima starts
-        debug_log("Executing colima start...");
-        let output = Command::new("/bin/sh")
-            .args(["-c", &shell_cmd])
-            .output()
-            .map_err(|e| {
-                debug_log(&format!("Command execution error: {}", e));
-                RuntimeError::ColimaStartFailed(e.to_string())
-            })?;
+            // Build a shell command that sets up environment before running colima
+            // VZ (Virtualization.framework) is used for better performance on macOS 13+
+            // The app requires com.apple.security.virtualization entitlement (see entitlements.plist)
+            let shell_cmd = format!(
+                "export PATH=\"{}:$PATH\" && export LIMA_SHARE_DIR=\"{}\" && \"{}\" start --vm-type vz --cpu 2 --memory 4 --disk 20",
+                bin_dir.display(),
+                share_dir.join("lima").display(),
+                colima_path.display()
+            );
+            debug_log(&format!("shell_cmd: {}", shell_cmd));
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        debug_log(&format!("colima start exit code: {:?}", output.status.code()));
-        debug_log(&format!("colima start stdout: {}", stdout));
-        debug_log(&format!("colima start stderr: {}", stderr));
+            debug_log("Executing colima start...");
+            let output = Command::new("/bin/sh")
+                .args(["-c", &shell_cmd])
+                .output()
+                .map_err(|e| {
+                    debug_log(&format!("Command execution error: {}", e));
+                    RuntimeError::ColimaStartFailed(e.to_string())
+                })?;
 
-        if !output.status.success() {
-            debug_log("ERROR: Colima start failed");
-            return Err(RuntimeError::ColimaStartFailed(format!(
-                "{}\n{}",
-                stderr.trim(),
-                stdout.trim()
-            )));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            debug_log(&format!("colima start exit code: {:?}", output.status.code()));
+            debug_log(&format!("colima start stdout: {}", stdout));
+            debug_log(&format!("colima start stderr: {}", stderr));
+
+            if output.status.success() {
+                debug_log("Colima started successfully");
+                return Ok(());
+            }
+
+            // First attempt failed — clean up stale state and retry
+            if attempt == 1 {
+                debug_log("First attempt failed, cleaning up stale Colima state before retry...");
+
+                // Try `colima delete` to clean up the broken instance
+                let delete_cmd = format!(
+                    "export PATH=\"{}:$PATH\" && \"{}\" delete --force",
+                    bin_dir.display(),
+                    colima_path.display()
+                );
+                debug_log(&format!("Running: {}", delete_cmd));
+                let del_output = Command::new("/bin/sh")
+                    .args(["-c", &delete_cmd])
+                    .output();
+                if let Ok(del) = del_output {
+                    debug_log(&format!("colima delete exit: {:?}, stderr: {}",
+                        del.status.code(),
+                        String::from_utf8_lossy(&del.stderr)
+                    ));
+                }
+
+                // Also remove stale Lima instance directory as a fallback
+                if let Some(home) = dirs::home_dir() {
+                    let lima_instance = home.join(".colima").join("_lima").join("colima");
+                    if lima_instance.exists() {
+                        debug_log(&format!("Removing stale Lima instance dir: {:?}", lima_instance));
+                        let _ = std::fs::remove_dir_all(&lima_instance);
+                    }
+                }
+
+                // Brief pause before retry
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            } else {
+                // Second attempt also failed
+                debug_log("ERROR: Colima start failed after retry");
+                return Err(RuntimeError::ColimaStartFailed(format!(
+                    "{}\n{}",
+                    stderr.trim(),
+                    stdout.trim()
+                )));
+            }
         }
 
-        debug_log("Colima started successfully");
-        Ok(())
+        unreachable!()
     }
 
     pub fn stop_colima(&self) -> Result<(), RuntimeError> {
