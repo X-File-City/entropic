@@ -568,6 +568,20 @@ impl Runtime {
                 return Ok(());
             }
 
+            // Colima may exit non-zero in DEGRADED state (guest agent not running)
+            // but Docker can still work fine via the SSH-forwarded socket.
+            // Check if Docker is actually usable before treating this as a failure.
+            let is_degraded = stderr.contains("DEGRADED") || stderr.contains("degraded");
+            if is_degraded {
+                debug_log("Colima reported DEGRADED state, checking if Docker is still usable...");
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if self.is_docker_ready_colima() {
+                    debug_log("Docker is functional despite DEGRADED state — treating as success");
+                    return Ok(());
+                }
+                debug_log("Docker not ready despite DEGRADED state — treating as failure");
+            }
+
             // First attempt failed — clean up stale state and retry
             if attempt == 1 {
                 debug_log("First attempt failed, cleaning up stale Colima state before retry...");
