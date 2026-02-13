@@ -1582,6 +1582,7 @@ export function Chat({
     const sendSession = currentSession;
     const currentDraft = sendSession ? (draftsRef.current[sendSession] || "") : "";
     const messageContent = content || currentDraft.trim();
+    const failedDraftRestore = content ? null : currentDraft;
     if (!currentSession || !connected || isLoading || (!messageContent && pendingAttachments.length === 0)) return;
 
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: messageContent, sentAt: Date.now() };

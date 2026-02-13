@@ -2332,7 +2332,7 @@ pub async fn start_gateway_with_proxy(
     model: String,
     image_model: Option<String>,
 ) -> Result<(), String> {
-    let proxy_token = gateway_token;
+    let proxy_token = gateway_token.clone();
     // Convert localhost URLs to host.docker.internal for Docker container access
     let docker_proxy_url = if proxy_url.contains("localhost") || proxy_url.contains("127.0.0.1") {
         proxy_url
@@ -2370,7 +2370,6 @@ pub async fn start_gateway_with_proxy(
         let expected_proxy_env = format!("{}/v1", docker_proxy_url);
         let current_proxy = read_container_env("NOVA_PROXY_BASE_URL");
         let current_token = read_container_env("OPENROUTER_API_KEY");
-        let current_gateway_token = read_container_env("OPENCLAW_GATEWAY_TOKEN");
         let current_schema = read_container_env("NOVA_GATEWAY_SCHEMA_VERSION");
         let current_model = read_container_env("OPENCLAW_MODEL");
         let current_image = read_container_env("OPENCLAW_IMAGE_MODEL");
