@@ -18,9 +18,30 @@ echo ""
 
 echo "🔍 Checking if Docker is available..."
 
-if ! docker info &> /dev/null; then
+# Unset DOCKER_HOST to use Docker Desktop if it's running
+# (User might have stale DOCKER_HOST from previous Colima usage)
+if [ -n "$DOCKER_HOST" ]; then
+    echo "  ℹ️  Unsetting DOCKER_HOST (was: $DOCKER_HOST)"
+    unset DOCKER_HOST
+fi
+
+echo "  Docker path: $(which docker 2>&1 || echo 'not found')"
+echo ""
+
+# Try docker info and capture both stdout and stderr
+echo "  Running: docker info..."
+if docker info > /tmp/docker-check.out 2> /tmp/docker-check.err; then
+    echo "✅ Docker is running"
+else
     echo ""
     echo "❌ Docker is not running!"
+    echo ""
+    echo "Debug info:"
+    echo "  Exit code: $?"
+    if [ -s /tmp/docker-check.err ]; then
+        echo "  Error output:"
+        cat /tmp/docker-check.err | head -5 | sed 's/^/    /'
+    fi
     echo ""
     echo "You need Docker running to build the OpenClaw runtime image."
     echo "Choose one option:"
@@ -33,10 +54,11 @@ if ! docker info &> /dev/null; then
     echo "   colima start --cpu 4 --memory 8 --vm-type vz"
     echo ""
     echo "Then run this script again."
+    rm -f /tmp/docker-check.out /tmp/docker-check.err
     exit 1
 fi
 
-echo "✅ Docker is running"
+rm -f /tmp/docker-check.out /tmp/docker-check.err
 
 # ============================================
 # 1. INSTALL DEPENDENCIES
