@@ -15,13 +15,13 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   GatewayClient,
   createGatewayClient,
-  getGatewayClient,
   type ChatEvent,
   type CronJob,
   type CronSchedule,
   type CronPayload,
   type CronRunLogEntry,
 } from "../lib/gateway";
+import { resolveGatewayAuth } from "../lib/gateway-auth";
 import { getIntegrations, getIntegrationsCached, type Integration } from "../lib/integrations";
 
 type Props = {
@@ -29,7 +29,6 @@ type Props = {
 };
 
 const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:19789";
-const GATEWAY_TOKEN = "nova-local-gateway";
 
 function describeSchedule(schedule: CronSchedule): string {
   switch (schedule.kind) {
@@ -376,13 +375,12 @@ function extractLatestAssistantMessage(messages: HistoryMessage[]): string {
   return "";
 }
 
-async function resolveGatewayUrl(): Promise<string> {
-  try {
-    const url = await invoke<string>("get_gateway_ws_url");
-    return url || DEFAULT_GATEWAY_URL;
-  } catch {
-    return DEFAULT_GATEWAY_URL;
-  }
+async function resolveGatewayConnection(): Promise<{ wsUrl: string; token: string }> {
+  const { wsUrl, token } = await resolveGatewayAuth();
+  return {
+    wsUrl: wsUrl || DEFAULT_GATEWAY_URL,
+    token,
+  };
 }
 
 function editorToSchedule(editor: EditorState): CronSchedule {
@@ -832,9 +830,8 @@ export function Tasks({ gatewayRunning }: Props) {
       throw new Error("Gateway is offline. Start it to manage tasks.");
     }
     tasksConnectingRef.current = (async () => {
-      const url = await resolveGatewayUrl();
-      const existing = getGatewayClient();
-      const client = existing ?? createGatewayClient(url, GATEWAY_TOKEN);
+      const { wsUrl, token } = await resolveGatewayConnection();
+      const client = createGatewayClient(wsUrl, token);
       if (!client.isConnected()) {
         const timeoutMs = 8_000;
         let timeoutId: number | null = null;

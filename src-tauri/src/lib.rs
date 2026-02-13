@@ -66,6 +66,7 @@ pub fn run() {
             commands::restart_gateway,
             commands::get_gateway_status,
             commands::get_gateway_ws_url,
+            commands::get_gateway_auth,
             commands::get_setup_progress,
             commands::run_first_time_setup,
             commands::set_api_key,

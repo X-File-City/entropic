@@ -252,7 +252,6 @@ async fn check_gateway_ws_health(ws_url: &str, token: &str) -> Result<bool, Stri
     let result = timeout(Duration::from_secs(3), async {
         let mut sent_connect = false;
         let mut sent_health = false;
-        let mut connect_ok = false;
         loop {
             let msg = ws
                 .next()
@@ -302,7 +301,6 @@ async fn check_gateway_ws_health(ws_url: &str, token: &str) -> Result<bool, Stri
                                 .unwrap_or("gateway connect rejected");
                             return Err(msg.to_string());
                         }
-                        connect_ok = true;
                         if !sent_health {
                             sent_health = true;
                             let health = serde_json::json!({
@@ -321,11 +319,7 @@ async fn check_gateway_ws_health(ws_url: &str, token: &str) -> Result<bool, Stri
                                 .and_then(|v| v.get("message"))
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("gateway health rejected");
-                            // Some gateway builds may downgrade/strip scopes for probe clients.
-                            // If connect succeeded, treat this as alive to avoid false "gateway down" states.
-                            if connect_ok && msg.contains("missing scope") {
-                                return Ok(true);
-                            }
+                            return Err(msg.to_string());
                         }
                         return Ok(ok);
                     }
@@ -378,6 +372,12 @@ pub struct AuthProviderStatus {
     pub id: String,
     pub has_key: bool,
     pub last4: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GatewayAuthPayload {
+    pub ws_url: String,
+    pub token: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -493,6 +493,7 @@ struct StoredAuth {
     version: u8,
     keys: HashMap<String, String>,
     active_provider: Option<String>,
+    gateway_token: Option<String>,
     agent_settings: Option<StoredAgentSettings>,
 }
 
@@ -568,6 +569,7 @@ impl Default for StoredAuth {
             version: 1,
             keys: HashMap::new(),
             active_provider: None,
+            gateway_token: None,
             agent_settings: None,
         }
     }
@@ -786,6 +788,7 @@ fn append_nova_skills_mount(docker_args: &mut Vec<String>) {
 async fn call_whatsapp_qr_endpoint(
     action: &str,
     force: bool,
+    token: &str,
 ) -> Result<WhatsAppLoginState, String> {
     let base = if std::path::Path::new("/.dockerenv").exists() {
         "http://nova-openclaw:18789"
@@ -804,7 +807,7 @@ async fn call_whatsapp_qr_endpoint(
         .map_err(|e| e.to_string())?;
     let res = client
         .get(&url)
-        .bearer_auth("nova-local-gateway")
+        .bearer_auth(token)
         .send()
         .await
         .map_err(|e| format!("WhatsApp QR request failed: {}", e))?;
@@ -1291,6 +1294,119 @@ fn save_auth(app: &AppHandle, data: &StoredAuth) -> Result<(), String> {
     Ok(())
 }
 
+fn gateway_ws_url() -> &'static str {
+    if std::path::Path::new("/.dockerenv").exists() {
+        "ws://nova-openclaw:18789"
+    } else {
+        "ws://127.0.0.1:19789"
+    }
+}
+
+fn generate_gateway_token() -> String {
+    let mut token_bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut token_bytes);
+    URL_SAFE_NO_PAD.encode(token_bytes)
+}
+
+fn normalize_token(value: Option<String>) -> Option<String> {
+    value.and_then(|token| {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn container_gateway_token() -> Option<String> {
+    normalize_token(read_container_env("OPENCLAW_GATEWAY_TOKEN"))
+}
+
+fn expected_gateway_token(app: &AppHandle) -> Result<String, String> {
+    if let Some(from_env) = normalize_token(std::env::var("NOVA_GATEWAY_TOKEN").ok()) {
+        return Ok(from_env);
+    }
+
+    let mut stored = load_auth(app);
+    if let Some(existing) = normalize_token(stored.gateway_token.clone()) {
+        return Ok(existing);
+    }
+
+    let generated = generate_gateway_token();
+    stored.gateway_token = Some(generated.clone());
+    save_auth(app, &stored)?;
+    Ok(generated)
+}
+
+fn effective_gateway_token(app: &AppHandle) -> Result<String, String> {
+    if let Some(token) = container_gateway_token() {
+        return Ok(token);
+    }
+    expected_gateway_token(app)
+}
+
+fn redact_env_value(env: &str) -> String {
+    const SECRET_ENV_PREFIXES: &[&str] = &[
+        "OPENCLAW_GATEWAY_TOKEN=",
+        "ANTHROPIC_API_KEY=",
+        "OPENAI_API_KEY=",
+        "GEMINI_API_KEY=",
+        "OPENROUTER_API_KEY=",
+        "NOVA_PROXY_BASE_URL=",
+    ];
+    for prefix in SECRET_ENV_PREFIXES {
+        if env.starts_with(prefix) {
+            return format!("{}[REDACTED]", prefix);
+        }
+    }
+    env.to_string()
+}
+
+fn docker_args_for_log(args: &[String]) -> String {
+    let mut redacted = Vec::with_capacity(args.len());
+    let mut expect_env = false;
+    for arg in args {
+        if expect_env {
+            redacted.push(redact_env_value(arg));
+            expect_env = false;
+            continue;
+        }
+        redacted.push(arg.clone());
+        if arg == "-e" {
+            expect_env = true;
+        }
+    }
+    redacted.join(" ")
+}
+
+async fn wait_for_gateway_health_strict(token: &str, attempts: usize) -> Result<(), String> {
+    let ws_url = gateway_ws_url();
+    let mut last_error = String::new();
+    for attempt in 1..=attempts {
+        match check_gateway_ws_health(ws_url, token).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                last_error = "health rpc rejected".to_string();
+            }
+            Err(err) => {
+                last_error = err;
+            }
+        }
+        if attempt < attempts {
+            tokio::time::sleep(Duration::from_millis(750)).await;
+        }
+    }
+
+    if last_error.is_empty() {
+        last_error = "unknown health failure".to_string();
+    }
+    Err(format!(
+        "Gateway failed strict health check at {}: {}",
+        ws_url, last_error
+    ))
+}
+
 fn default_agent_settings() -> StoredAgentSettings {
     StoredAgentSettings::default()
 }
@@ -1471,6 +1587,8 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         }
     }
 
+    let gateway_token = expected_gateway_token(&app)?;
+
     // Check if nova-openclaw container exists
     let check = docker_command()
         .args(["ps", "-q", "-f", "name=nova-openclaw"])
@@ -1478,8 +1596,37 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         .map_err(|e| format!("Failed to check container: {}", e))?;
 
     if !check.stdout.is_empty() {
-        // Container already running
-        return Ok(());
+        let current_gateway_token = container_gateway_token();
+        if current_gateway_token.as_deref() != Some(gateway_token.as_str()) {
+            let _ = docker_command().args(["rm", "-f", OPENCLAW_CONTAINER]).output();
+        } else {
+            apply_agent_settings(&app, &state)?;
+            start_scanner_sidecar();
+            if let Err(initial) = wait_for_gateway_health_strict(&gateway_token, 12).await {
+                println!(
+                    "[Nova] Gateway strict health check failed, attempting container restart: {}",
+                    initial
+                );
+                let restart = docker_command()
+                    .args(["restart", OPENCLAW_CONTAINER])
+                    .output()
+                    .map_err(|e| format!("Failed to restart container: {}", e))?;
+                if !restart.status.success() {
+                    let stderr = String::from_utf8_lossy(&restart.stderr);
+                    return Err(format!(
+                        "Gateway failed health check ({}) and restart failed: {}",
+                        initial,
+                        stderr.trim()
+                    ));
+                }
+                apply_agent_settings(&app, &state)?;
+                start_scanner_sidecar();
+                wait_for_gateway_health_strict(&gateway_token, 16).await.map_err(|e| {
+                    format!("Gateway failed strict health check after recovery: {}", e)
+                })?;
+            }
+            return Ok(());
+        }
     }
 
     // Check if container exists but stopped
@@ -1489,20 +1636,8 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         .map_err(|e| format!("Failed to check container: {}", e))?;
 
     if !check_all.stdout.is_empty() {
-        // Start existing container
-        let start = docker_command()
-            .args(["start", "nova-openclaw"])
-            .output()
-            .map_err(|e| format!("Failed to start container: {}", e))?;
-
-        if !start.status.success() {
-            let stderr = String::from_utf8_lossy(&start.stderr);
-            return Err(format!("Failed to start container: {}", stderr));
-        }
-        // Re-apply persisted settings after a restart
-        apply_agent_settings(&app, &state)?;
-        start_scanner_sidecar();
-        return Ok(());
+        // Recreate stopped container to guarantee expected gateway token/config.
+        let _ = docker_command().args(["rm", "-f", OPENCLAW_CONTAINER]).output();
     }
 
     // Container doesn't exist - need to create it
@@ -1538,7 +1673,7 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         "--tmpfs".to_string(), "/tmp:rw,noexec,nosuid,nodev,size=100m".to_string(),
         "--tmpfs".to_string(), "/run:rw,noexec,nosuid,nodev,size=10m".to_string(),
         "--tmpfs".to_string(), "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
-        "-e".to_string(), "OPENCLAW_GATEWAY_TOKEN=nova-local-gateway".to_string(),
+        "-e".to_string(), format!("OPENCLAW_GATEWAY_TOKEN={}", gateway_token),
         "-e".to_string(), format!("OPENCLAW_MODEL={}", model),
         "-e".to_string(), format!("OPENCLAW_MEMORY_SLOT={}", memory_slot),
     ];
@@ -1586,7 +1721,7 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
 
     // Create and start container with hardened settings
     println!("[Nova] Starting gateway container with model: {}", model);
-    println!("[Nova] Docker command: docker {}", docker_args.join(" "));
+    println!("[Nova] Docker command: docker {}", docker_args_for_log(&docker_args));
 
     let run = docker_command()
         .args(&docker_args)
@@ -1606,6 +1741,30 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
 
     // Start skill scanner sidecar
     start_scanner_sidecar();
+
+    if let Err(initial) = wait_for_gateway_health_strict(&gateway_token, 12).await {
+        println!(
+            "[Nova] Gateway strict health check failed after start, attempting restart: {}",
+            initial
+        );
+        let restart = docker_command()
+            .args(["restart", OPENCLAW_CONTAINER])
+            .output()
+            .map_err(|e| format!("Failed to restart container: {}", e))?;
+        if !restart.status.success() {
+            let stderr = String::from_utf8_lossy(&restart.stderr);
+            return Err(format!(
+                "Gateway failed health check ({}) and restart failed: {}",
+                initial,
+                stderr.trim()
+            ));
+        }
+        apply_agent_settings(&app, &state)?;
+        start_scanner_sidecar();
+        wait_for_gateway_health_strict(&gateway_token, 16)
+            .await
+            .map_err(|e| format!("Gateway failed strict health check after recovery: {}", e))?;
+    }
 
     Ok(())
 }
@@ -1640,6 +1799,7 @@ pub async fn start_gateway_with_proxy(
     model: String,
     image_model: Option<String>,
 ) -> Result<(), String> {
+    let proxy_token = gateway_token;
     // Convert localhost URLs to host.docker.internal for Docker container access
     let docker_proxy_url = if proxy_url.contains("localhost") || proxy_url.contains("127.0.0.1") {
         proxy_url
@@ -1660,6 +1820,7 @@ pub async fn start_gateway_with_proxy(
             return Err("Docker is not running. Please start Docker and try again.".to_string());
         }
     }
+    let local_gateway_token = expected_gateway_token(&app)?;
 
     // Check if container is already running
     let check = docker_command()
@@ -1673,18 +1834,45 @@ pub async fn start_gateway_with_proxy(
         let current_token = read_container_env("OPENROUTER_API_KEY");
         let current_model = read_container_env("OPENCLAW_MODEL");
         let current_image = read_container_env("OPENCLAW_IMAGE_MODEL");
+        let current_gateway_token = container_gateway_token();
         let expected_image = image_model.clone().unwrap_or_default();
 
         let proxy_matches = current_proxy.as_deref() == Some(expected_proxy_env.as_str());
-        let token_matches = current_token.as_deref() == Some(gateway_token.as_str());
+        let token_matches = current_token.as_deref() == Some(proxy_token.as_str());
         let model_matches = current_model.as_deref() == Some(model.as_str());
+        let gateway_token_matches =
+            current_gateway_token.as_deref() == Some(local_gateway_token.as_str());
         let image_matches = expected_image.is_empty()
             || current_image.as_deref() == Some(expected_image.as_str());
 
-        if proxy_matches && token_matches && model_matches && image_matches {
+        if proxy_matches && token_matches && model_matches && gateway_token_matches && image_matches
+        {
             println!("[Nova] Proxy container already running with matching config. Reusing.");
             apply_agent_settings(&app, &state)?;
             start_scanner_sidecar();
+            if let Err(initial) = wait_for_gateway_health_strict(&local_gateway_token, 12).await {
+                println!(
+                    "[Nova] Proxy gateway health check failed, attempting container restart: {}",
+                    initial
+                );
+                let restart = docker_command()
+                    .args(["restart", OPENCLAW_CONTAINER])
+                    .output()
+                    .map_err(|e| format!("Failed to restart container: {}", e))?;
+                if !restart.status.success() {
+                    let stderr = String::from_utf8_lossy(&restart.stderr);
+                    return Err(format!(
+                        "Proxy gateway failed health check ({}) and restart failed: {}",
+                        initial,
+                        stderr.trim()
+                    ));
+                }
+                apply_agent_settings(&app, &state)?;
+                start_scanner_sidecar();
+                wait_for_gateway_health_strict(&local_gateway_token, 16).await.map_err(|e| {
+                    format!("Proxy gateway failed strict health check after recovery: {}", e)
+                })?;
+            }
             return Ok(());
         }
 
@@ -1727,12 +1915,12 @@ pub async fn start_gateway_with_proxy(
         "--tmpfs".to_string(), "/tmp:rw,noexec,nosuid,nodev,size=100m".to_string(),
         "--tmpfs".to_string(), "/run:rw,noexec,nosuid,nodev,size=10m".to_string(),
         "--tmpfs".to_string(), "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
-        "-e".to_string(), "OPENCLAW_GATEWAY_TOKEN=nova-local-gateway".to_string(),
+        "-e".to_string(), format!("OPENCLAW_GATEWAY_TOKEN={}", local_gateway_token),
         "-e".to_string(), format!("OPENCLAW_MODEL={}", model),
         "-e".to_string(), "OPENCLAW_MEMORY_SLOT=memory-core".to_string(),
         "-e".to_string(), "NOVA_PROXY_MODE=1".to_string(),
         // Nova proxy configuration - OpenClaw will use this as its AI backend (OpenRouter provider)
-        "-e".to_string(), format!("OPENROUTER_API_KEY={}", gateway_token),
+        "-e".to_string(), format!("OPENROUTER_API_KEY={}", proxy_token),
         "-e".to_string(), format!("NOVA_PROXY_BASE_URL={}/v1", docker_proxy_url),
     ];
 
@@ -1770,7 +1958,7 @@ pub async fn start_gateway_with_proxy(
     // Create and start container
     println!("[Nova] Starting proxy gateway with model: {}", model);
     println!("[Nova] Proxy URL: {}", docker_proxy_url);
-    println!("[Nova] Docker command: docker {}", docker_args.join(" "));
+    println!("[Nova] Docker command: docker {}", docker_args_for_log(&docker_args));
 
     let run = docker_command()
         .args(&docker_args)
@@ -1791,6 +1979,30 @@ pub async fn start_gateway_with_proxy(
     // Start skill scanner sidecar
     start_scanner_sidecar();
 
+    if let Err(initial) = wait_for_gateway_health_strict(&local_gateway_token, 12).await {
+        println!(
+            "[Nova] Proxy gateway strict health check failed after start, attempting restart: {}",
+            initial
+        );
+        let restart = docker_command()
+            .args(["restart", OPENCLAW_CONTAINER])
+            .output()
+            .map_err(|e| format!("Failed to restart container: {}", e))?;
+        if !restart.status.success() {
+            let stderr = String::from_utf8_lossy(&restart.stderr);
+            return Err(format!(
+                "Proxy gateway failed health check ({}) and restart failed: {}",
+                initial,
+                stderr.trim()
+            ));
+        }
+        apply_agent_settings(&app, &state)?;
+        start_scanner_sidecar();
+        wait_for_gateway_health_strict(&local_gateway_token, 16).await.map_err(|e| {
+            format!("Proxy gateway failed strict health check after recovery: {}", e)
+        })?;
+    }
+
     Ok(())
 }
 
@@ -1809,7 +2021,7 @@ pub async fn restart_gateway(app: AppHandle, state: State<'_, AppState>) -> Resu
 }
 
 #[tauri::command]
-pub async fn get_gateway_status() -> Result<bool, String> {
+pub async fn get_gateway_status(app: AppHandle) -> Result<bool, String> {
     // Check if container is running
     let check = docker_command()
         .args(["ps", "-q", "-f", "name=nova-openclaw", "-f", "status=running"])
@@ -1821,14 +2033,11 @@ pub async fn get_gateway_status() -> Result<bool, String> {
         return Ok(false);
     }
 
-    let ws_url = if std::path::Path::new("/.dockerenv").exists() {
-        "ws://nova-openclaw:18789"
-    } else {
-        "ws://127.0.0.1:19789"
-    };
+    let ws_url = gateway_ws_url();
+    let token = effective_gateway_token(&app)?;
 
     println!("[Nova] Checking gateway health via WS at: {}", ws_url);
-    match check_gateway_ws_health(ws_url, "nova-local-gateway").await {
+    match check_gateway_ws_health(ws_url, &token).await {
         Ok(true) => {
             println!("[Nova] Gateway health check passed");
             Ok(true)
@@ -1855,12 +2064,15 @@ pub async fn get_gateway_status() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn get_gateway_ws_url() -> Result<String, String> {
-    let url = if std::path::Path::new("/.dockerenv").exists() {
-        "ws://nova-openclaw:18789"
-    } else {
-        "ws://127.0.0.1:19789"
-    };
-    Ok(url.to_string())
+    Ok(gateway_ws_url().to_string())
+}
+
+#[tauri::command]
+pub async fn get_gateway_auth(app: AppHandle) -> Result<GatewayAuthPayload, String> {
+    Ok(GatewayAuthPayload {
+        ws_url: gateway_ws_url().to_string(),
+        token: effective_gateway_token(&app)?,
+    })
 }
 
 #[tauri::command]
@@ -2275,7 +2487,8 @@ pub async fn start_whatsapp_login(
     app: AppHandle,
 ) -> Result<WhatsAppLoginState, String> {
     let _ = timeout_ms;
-    let result = call_whatsapp_qr_endpoint("start", force).await?;
+    let token = effective_gateway_token(&app)?;
+    let result = call_whatsapp_qr_endpoint("start", force, &token).await?;
     let state = app.state::<AppState>();
     let mut cache = state.whatsapp_login.lock().map_err(|e| e.to_string())?;
     cache.status = result.status.clone();
@@ -2313,7 +2526,8 @@ pub async fn wait_whatsapp_login(timeout_ms: Option<u64>) -> Result<WhatsAppLogi
 
 #[tauri::command]
 pub async fn get_whatsapp_login(app: AppHandle) -> Result<WhatsAppLoginState, String> {
-    let result = call_whatsapp_qr_endpoint("status", false).await?;
+    let token = effective_gateway_token(&app)?;
+    let result = call_whatsapp_qr_endpoint("status", false, &token).await?;
     let state = app.state::<AppState>();
     let mut cache = state.whatsapp_login.lock().map_err(|e| e.to_string())?;
     cache.status = result.status.clone();

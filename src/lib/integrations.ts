@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { Store } from "@tauri-apps/plugin-store";
 import { createGatewayClient } from "./gateway";
 import { getGatewayStatusCached } from "./gateway-status";
+import { resolveGatewayAuth } from "./gateway-auth";
 import { apiRequest } from "./auth";
 import {
   loadIntegrationSecret,
@@ -13,8 +14,6 @@ import {
 } from "./vault";
 
 const INTEGRATION_STORE = "nova-integrations.json";
-const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:19789";
-const GATEWAY_TOKEN = "nova-local-gateway";
 const INTEGRATIONS_REDIRECT_URL =
   (import.meta as any).env?.VITE_INTEGRATIONS_REDIRECT_URL ||
   "nova://integrations/success";
@@ -282,9 +281,8 @@ async function importIntegrationBundle(bundle: IntegrationTokenBundle): Promise<
   if (!isRunning) {
     console.warn("[integrations] Gateway status check failed; attempting import anyway.");
   }
-  const gatewayUrl =
-    (await invoke<string>("get_gateway_ws_url").catch(() => "")) || DEFAULT_GATEWAY_URL;
-  const client = createGatewayClient(gatewayUrl, GATEWAY_TOKEN);
+  const { wsUrl, token } = await resolveGatewayAuth();
+  const client = createGatewayClient(wsUrl, token);
   if (!client.isConnected()) {
     await client.connect();
   }
@@ -361,9 +359,8 @@ export async function removeIntegrationFromGateway(provider: IntegrationProvider
   if (!isRunning) {
     return;
   }
-  const gatewayUrl =
-    (await invoke<string>("get_gateway_ws_url").catch(() => "")) || DEFAULT_GATEWAY_URL;
-  const client = createGatewayClient(gatewayUrl, GATEWAY_TOKEN);
+  const { wsUrl, token } = await resolveGatewayAuth();
+  const client = createGatewayClient(wsUrl, token);
   if (!client.isConnected()) {
     await client.connect();
   }

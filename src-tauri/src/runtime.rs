@@ -239,6 +239,38 @@ impl Runtime {
         cmd.output()
     }
 
+    fn run_colima_start(
+        &self,
+        profile: &str,
+        vm_type: &str,
+    ) -> Result<std::process::Output, std::io::Error> {
+        self.run_colima(
+            profile,
+            &[
+                "start",
+                "--vm-type",
+                vm_type,
+                "--cpu",
+                "2",
+                "--memory",
+                "4",
+                "--disk",
+                "20",
+            ],
+        )
+    }
+
+    fn run_limactl(&self, args: &[&str]) -> Result<std::process::Output, std::io::Error> {
+        let limactl_path = self.limactl_path();
+        let mut cmd = self.bundled_command(&limactl_path);
+        cmd.env(
+            "LIMA_HOME",
+            self.colima_home().join("_lima").display().to_string(),
+        );
+        cmd.args(args);
+        cmd.output()
+    }
+
     fn is_vz_unavailable_error(&self, output: &str) -> bool {
         let combined = output.to_lowercase();
         combined.contains("virtualization.framework")
@@ -246,6 +278,182 @@ impl Runtime {
             || combined.contains("vm-type vz")
             || combined.contains("vz is not supported")
             || combined.contains("failed to validate vm type")
+    }
+
+    fn is_vz_guest_agent_error(&self, output: &str) -> bool {
+        let combined = output.to_lowercase();
+        combined.contains("guest agent does not seem to be running")
+            || combined.contains("guest agent events closed unexpectedly")
+            || combined.contains("degraded, status={running:true degraded:true")
+            || combined.contains("connection reset by peer")
+    }
+
+    fn profile_is_degraded(&self, profile: &str) -> bool {
+        let output = match self.run_colima(profile, &["status", "--json"]) {
+            Ok(out) => out,
+            Err(e) => {
+                debug_log(&format!(
+                    "Unable to inspect profile status ({}): {}",
+                    profile, e
+                ));
+                return false;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        debug_log(&format!(
+            "colima status --json exit code ({}): {:?}",
+            profile,
+            output.status.code()
+        ));
+        debug_log(&format!("colima status --json stdout ({}): {}", profile, stdout));
+        debug_log(&format!("colima status --json stderr ({}): {}", profile, stderr));
+
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(degraded) = value.get("degraded").and_then(|v| v.as_bool()) {
+                return degraded;
+            }
+            if let Some(status) = value.get("status").and_then(|v| v.as_str()) {
+                if status.eq_ignore_ascii_case("degraded") {
+                    return true;
+                }
+                if status.eq_ignore_ascii_case("running") {
+                    return false;
+                }
+            }
+        }
+
+        let lower = format!("{}\n{}", stdout, stderr).to_lowercase();
+        lower.contains("\"degraded\":true")
+            || lower.contains("\"status\":\"degraded\"")
+            || lower.contains("degraded, status={running:true")
+    }
+
+    fn stop_colima_profile_force(&self, profile: &str) {
+        match self.run_colima(profile, &["stop", "--force"]) {
+            Ok(stop_output) => {
+                debug_log(&format!(
+                    "colima stop --force exit code ({}): {:?}",
+                    profile,
+                    stop_output.status.code()
+                ));
+                debug_log(&format!(
+                    "colima stop --force stderr ({}): {}",
+                    profile,
+                    String::from_utf8_lossy(&stop_output.stderr)
+                ));
+            }
+            Err(e) => {
+                debug_log(&format!("colima stop --force failed ({}): {}", profile, e));
+            }
+        }
+    }
+
+    fn try_repair_vz_profile(&self, profile: &str) -> Result<(), RuntimeError> {
+        debug_log(&format!(
+            "Attempting VZ in-place repair for profile {} via colima stop/start",
+            profile
+        ));
+        self.stop_colima_profile_force(profile);
+        std::thread::sleep(std::time::Duration::from_secs(COLIMA_RETRY_DELAY_SECS));
+
+        let restart = self
+            .run_colima_start(profile, "vz")
+            .map_err(|e| RuntimeError::ColimaStartFailed(format!("VZ repair start failed: {}", e)))?;
+        let restart_stdout = String::from_utf8_lossy(&restart.stdout);
+        let restart_stderr = String::from_utf8_lossy(&restart.stderr);
+        debug_log(&format!(
+            "VZ repair start exit code ({}): {:?}",
+            profile,
+            restart.status.code()
+        ));
+        debug_log(&format!(
+            "VZ repair start stdout ({}): {}",
+            profile, restart_stdout
+        ));
+        debug_log(&format!(
+            "VZ repair start stderr ({}): {}",
+            profile, restart_stderr
+        ));
+
+        if restart.status.success() && !self.profile_is_degraded(profile) {
+            debug_log("VZ in-place repair succeeded");
+            return Ok(());
+        }
+
+        debug_log("VZ in-place repair did not clear degraded state, trying limactl stop/start");
+        let instance = format!("colima-{}", profile);
+
+        match self.run_limactl(&["stop", &instance]) {
+            Ok(out) => {
+                debug_log(&format!("limactl stop exit code ({}): {:?}", instance, out.status.code()));
+                debug_log(&format!(
+                    "limactl stop stderr ({}): {}",
+                    instance,
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+            Err(e) => {
+                debug_log(&format!("limactl stop failed ({}): {}", instance, e));
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(COLIMA_RETRY_DELAY_SECS));
+
+        let limactl_start = self
+            .run_limactl(&["start", &instance])
+            .map_err(|e| RuntimeError::ColimaStartFailed(format!("limactl start failed: {}", e)))?;
+        debug_log(&format!(
+            "limactl start exit code ({}): {:?}",
+            instance,
+            limactl_start.status.code()
+        ));
+        debug_log(&format!(
+            "limactl start stdout ({}): {}",
+            instance,
+            String::from_utf8_lossy(&limactl_start.stdout)
+        ));
+        debug_log(&format!(
+            "limactl start stderr ({}): {}",
+            instance,
+            String::from_utf8_lossy(&limactl_start.stderr)
+        ));
+
+        if !limactl_start.status.success() {
+            return Err(RuntimeError::ColimaStartFailed(format!(
+                "limactl start failed for {}: {}",
+                instance,
+                String::from_utf8_lossy(&limactl_start.stderr).trim()
+            )));
+        }
+
+        let final_start = self
+            .run_colima_start(profile, "vz")
+            .map_err(|e| RuntimeError::ColimaStartFailed(format!("final VZ start failed: {}", e)))?;
+        debug_log(&format!(
+            "final VZ start exit code ({}): {:?}",
+            profile,
+            final_start.status.code()
+        ));
+        debug_log(&format!(
+            "final VZ start stdout ({}): {}",
+            profile,
+            String::from_utf8_lossy(&final_start.stdout)
+        ));
+        debug_log(&format!(
+            "final VZ start stderr ({}): {}",
+            profile,
+            String::from_utf8_lossy(&final_start.stderr)
+        ));
+
+        if final_start.status.success() && !self.profile_is_degraded(profile) {
+            debug_log("VZ repair via limactl succeeded");
+            return Ok(());
+        }
+
+        Err(RuntimeError::ColimaStartFailed(
+            "VZ repair attempts did not clear degraded state".to_string(),
+        ))
     }
 
     fn shell_escape_arg(arg: &str) -> String {
@@ -326,20 +534,7 @@ impl Runtime {
             ));
 
             let output = self
-                .run_colima(
-                    profile,
-                    &[
-                        "start",
-                        "--vm-type",
-                        vm_type,
-                        "--cpu",
-                        "2",
-                        "--memory",
-                        "4",
-                        "--disk",
-                        "20",
-                    ],
-                )
+                .run_colima_start(profile, vm_type)
                 .map_err(|e| RuntimeError::ColimaStartFailed(e.to_string()))?;
 
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -352,44 +547,44 @@ impl Runtime {
             debug_log(&format!("colima start stderr: {}", stderr));
 
             if output.status.success() {
+                if vm_type == "vz" && self.profile_is_degraded(profile) {
+                    debug_log(
+                        "colima start returned success but profile is still DEGRADED; forcing retry",
+                    );
+                    if attempt == 1 {
+                        self.stop_colima_profile_force(profile);
+                        std::thread::sleep(std::time::Duration::from_secs(COLIMA_RETRY_DELAY_SECS));
+                        continue;
+                    }
+                    return Err(RuntimeError::ColimaStartFailed(
+                        "colima start returned success but profile remained DEGRADED".to_string(),
+                    ));
+                }
                 debug_log("Colima started successfully");
                 return Ok(());
             }
 
             // Colima may exit non-zero in DEGRADED state (guest agent not running)
-            // while Docker is still usable via forwarded sockets.
+            // while Docker is still usable via sockets. We still treat this as
+            // failure because guest-agent degradation breaks host port forwarding.
             let is_degraded = stderr.contains("DEGRADED")
                 || stderr.contains("degraded")
                 || stdout.contains("DEGRADED")
                 || stdout.contains("degraded");
             if is_degraded {
-                debug_log("Colima reported DEGRADED state, checking Docker usability...");
+                debug_log("Colima reported DEGRADED state; treating as startup failure");
                 std::thread::sleep(std::time::Duration::from_secs(2));
                 let profile_socket = self.colima_socket_for_profile(profile);
                 if self.is_docker_ready_on_socket(&profile_socket) {
-                    debug_log("Docker is functional despite DEGRADED state — treating as success");
-                    return Ok(());
+                    debug_log(
+                        "Docker socket is reachable despite DEGRADED state, but host networking is unreliable",
+                    );
                 }
-                debug_log("Docker not ready despite DEGRADED state — treating as failure");
             }
 
             if attempt == 1 {
                 debug_log("First attempt failed, trying non-destructive recovery via stop --force");
-                match self.run_colima(profile, &["stop", "--force"]) {
-                    Ok(stop_output) => {
-                        debug_log(&format!(
-                            "colima stop --force exit code: {:?}",
-                            stop_output.status.code()
-                        ));
-                        debug_log(&format!(
-                            "colima stop --force stderr: {}",
-                            String::from_utf8_lossy(&stop_output.stderr)
-                        ));
-                    }
-                    Err(e) => {
-                        debug_log(&format!("colima stop --force failed: {}", e));
-                    }
-                }
+                self.stop_colima_profile_force(profile);
                 // Give Colima time to release locks/sockets before retrying.
                 std::thread::sleep(std::time::Duration::from_secs(COLIMA_RETRY_DELAY_SECS));
                 continue;
@@ -776,6 +971,25 @@ impl Runtime {
                         profile, msg
                     ));
                     if vm_type == "vz" {
+                        if self.is_vz_guest_agent_error(&msg) {
+                            debug_log(
+                                "VZ failed with guest-agent/degraded signal; attempting in-place repair ladder",
+                            );
+                            match self.try_repair_vz_profile(profile) {
+                                Ok(()) => return Ok(()),
+                                Err(repair_err) => {
+                                    let repair_msg = repair_err.to_string();
+                                    debug_log(&format!("VZ repair ladder failed: {}", repair_msg));
+                                    last_error = Some(format!(
+                                        "{}\n\nVZ repair attempt failed: {}",
+                                        msg, repair_msg
+                                    ));
+                                    fell_back_from_vz = true;
+                                    debug_log("Falling back to qemu profile after VZ repair failure");
+                                    continue;
+                                }
+                            }
+                        }
                         if self.is_vz_unavailable_error(&msg) {
                             fell_back_from_vz = true;
                             debug_log("VZ unavailable, falling back to qemu profile");

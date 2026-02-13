@@ -29,11 +29,11 @@ import {
   CreditCard,
 } from "lucide-react";
 import {
-  getGatewayClient,
   createGatewayClient,
   type GatewayClient,
   type ChatEvent,
 } from "../lib/gateway";
+import { resolveGatewayAuth } from "../lib/gateway-auth";
 import { loadOnboardingData } from "../lib/profile";
 import { WALLPAPERS, DEFAULT_WALLPAPER_ID, getWallpaperById } from "../lib/wallpapers";
 const PluginStore = lazy(() => import("./Store").then((m) => ({ default: m.Store })));
@@ -76,7 +76,6 @@ const HIDDEN_FILES = new Set(["HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.m
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]);
 const BINARY_EXTS = new Set(["pdf", "zip", "xlsx", "xls", "docx", "pptx"]);
 const GATEWAY_URL = "ws://127.0.0.1:19789";
-const GATEWAY_TOKEN = "nova-local-gateway";
 const PANEL_FALLBACK = (
   <div className="p-4 text-xs text-[var(--text-tertiary)]">Loading…</div>
 );
@@ -565,8 +564,6 @@ export function Files({
 
   useEffect(() => {
     if (!chatOpen || !gatewayRunning) return;
-    const existing = getGatewayClient();
-    if (existing?.isConnected()) { chatClientRef.current = existing; setChatConnected(true); if (!chatSessionRef.current) chatSessionRef.current = existing.createSessionKey(); return; }
     let cancelled = false;
     let attachedClient: ReturnType<typeof createGatewayClient> | null = null;
     let onConnected: (() => void) | null = null;
@@ -575,7 +572,8 @@ export function Files({
     (async () => {
       setChatConnecting(true);
       try {
-        const client = createGatewayClient(GATEWAY_URL, GATEWAY_TOKEN);
+        const { wsUrl, token } = await resolveGatewayAuth();
+        const client = createGatewayClient(wsUrl || GATEWAY_URL, token);
         attachedClient = client;
         onConnected = () => { if (cancelled) return; chatClientRef.current = client; setChatConnected(true); setChatConnecting(false); if (!chatSessionRef.current) chatSessionRef.current = client.createSessionKey(); };
         onDisconnected = () => { if (!cancelled) setChatConnected(false); };

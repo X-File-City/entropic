@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
 import { GatewayClient, createGatewayClient, type ChatEvent, type GatewayMessage } from "../lib/gateway";
+import { resolveGatewayAuth } from "../lib/gateway-auth";
 import { loadOnboardingData, type OnboardingData } from "../lib/profile";
 import { SuggestionChip, type SuggestionAction } from "../components/SuggestionChip";
 import { ChannelSetupModal } from "../components/ChannelSetupModal";
@@ -286,7 +287,6 @@ const PROVIDERS: Provider[] = [
 ];
 
 const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:19789";
-const GATEWAY_TOKEN = "nova-local-gateway";
 const HISTORY_LIMIT = 500;
 
 function buildSuggestions(userName: string, hasName: boolean) {
@@ -547,7 +547,11 @@ export function Chat({
       setProviderStatus(state.providers);
       setConnectedProvider(state.active_provider || state.providers.find(p => p.has_key)?.id || null);
     }).catch(console.error);
-    invoke<string>("get_gateway_ws_url").then(url => url && setGatewayUrl(url)).catch(console.error);
+    resolveGatewayAuth()
+      .then(({ wsUrl }) => {
+        if (wsUrl) setGatewayUrl(wsUrl);
+      })
+      .catch(console.error);
   }, []);
 
   // If authenticated via proxy, treat as connected even without local API keys
@@ -600,8 +604,11 @@ export function Chat({
     setIsConnecting(true);
     setError(null);
     try {
-      addDiag(`connect -> ${gatewayUrl}`);
-      const client = createGatewayClient(gatewayUrl, GATEWAY_TOKEN);
+      const { wsUrl, token } = await resolveGatewayAuth();
+      const nextUrl = wsUrl || gatewayUrl || DEFAULT_GATEWAY_URL;
+      setGatewayUrl(nextUrl);
+      addDiag(`connect -> ${nextUrl}`);
+      const client = createGatewayClient(nextUrl, token);
       clientRef.current = client;
       detachGatewayListeners(client);
       const onConnected = () => {
