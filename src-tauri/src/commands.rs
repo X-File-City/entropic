@@ -724,6 +724,7 @@ fn get_runtime(app: &AppHandle) -> Runtime {
 const OPENCLAW_CONTAINER: &str = "nova-openclaw";
 const SCANNER_CONTAINER: &str = "nova-skill-scanner";
 const SCANNER_HOST_PORT: &str = "19791";
+const NOVA_GATEWAY_SCHEMA_VERSION: &str = "2026-02-13";
 const MANAGED_PLUGIN_IDS: &[&str] = &["nova-integrations", "nova-x"];
 
 fn start_scanner_sidecar() {
@@ -2123,37 +2124,21 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         .map_err(|e| format!("Failed to check container: {}", e))?;
 
     if !check.stdout.is_empty() {
-        let current_gateway_token = container_gateway_token();
-        if current_gateway_token.as_deref() != Some(gateway_token.as_str()) {
-            let _ = docker_command().args(["rm", "-f", OPENCLAW_CONTAINER]).output();
-        } else {
+        let current_gateway_token = read_container_env("OPENCLAW_GATEWAY_TOKEN");
+        let current_schema = read_container_env("NOVA_GATEWAY_SCHEMA_VERSION");
+        if current_gateway_token.as_deref() == Some("nova-local-gateway")
+            && current_schema.as_deref() == Some(NOVA_GATEWAY_SCHEMA_VERSION)
+        {
             apply_agent_settings(&app, &state)?;
             start_scanner_sidecar();
-            if let Err(initial) = wait_for_gateway_health_strict(&gateway_token, 12).await {
-                println!(
-                    "[Nova] Gateway strict health check failed, attempting container restart: {}",
-                    initial
-                );
-                let restart = docker_command()
-                    .args(["restart", OPENCLAW_CONTAINER])
-                    .output()
-                    .map_err(|e| format!("Failed to restart container: {}", e))?;
-                if !restart.status.success() {
-                    let stderr = String::from_utf8_lossy(&restart.stderr);
-                    return Err(format!(
-                        "Gateway failed health check ({}) and restart failed: {}",
-                        initial,
-                        stderr.trim()
-                    ));
-                }
-                apply_agent_settings(&app, &state)?;
-                start_scanner_sidecar();
-                wait_for_gateway_health_strict(&gateway_token, 16).await.map_err(|e| {
-                    format!("Gateway failed strict health check after recovery: {}", e)
-                })?;
-            }
             return Ok(());
         }
+
+        // Running container was created without Nova-managed gateway token env.
+        // Recreate it so auth mode token can be satisfied.
+        let _ = docker_command()
+            .args(["rm", "-f", "nova-openclaw"])
+            .output();
     }
 
     // Check if container exists but stopped
@@ -2163,8 +2148,11 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         .map_err(|e| format!("Failed to check container: {}", e))?;
 
     if !check_all.stdout.is_empty() {
-        // Recreate stopped container to guarantee expected gateway token/config.
-        let _ = docker_command().args(["rm", "-f", OPENCLAW_CONTAINER]).output();
+        // Recreate stale containers so required env vars (like OPENCLAW_GATEWAY_TOKEN)
+        // are always refreshed to Nova-managed defaults.
+        let _ = docker_command()
+            .args(["rm", "-f", "nova-openclaw"])
+            .output();
     }
 
     // Container doesn't exist - need to create it
@@ -2212,6 +2200,8 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
         "-e".to_string(),
         "OPENCLAW_GATEWAY_TOKEN=nova-local-gateway".to_string(),
+        "-e".to_string(),
+        format!("NOVA_GATEWAY_SCHEMA_VERSION={}", NOVA_GATEWAY_SCHEMA_VERSION),
         "-e".to_string(),
         format!("OPENCLAW_MODEL={}", model),
         "-e".to_string(),
@@ -2380,18 +2370,28 @@ pub async fn start_gateway_with_proxy(
         let expected_proxy_env = format!("{}/v1", docker_proxy_url);
         let current_proxy = read_container_env("NOVA_PROXY_BASE_URL");
         let current_token = read_container_env("OPENROUTER_API_KEY");
+        let current_gateway_token = read_container_env("OPENCLAW_GATEWAY_TOKEN");
+        let current_schema = read_container_env("NOVA_GATEWAY_SCHEMA_VERSION");
         let current_model = read_container_env("OPENCLAW_MODEL");
         let current_image = read_container_env("OPENCLAW_IMAGE_MODEL");
         let current_gateway_token = container_gateway_token();
         let expected_image = image_model.clone().unwrap_or_default();
 
         let proxy_matches = current_proxy.as_deref() == Some(expected_proxy_env.as_str());
-        let token_matches = current_token.as_deref() == Some(proxy_token.as_str());
+        let token_matches = current_token.as_deref() == Some(gateway_token.as_str());
+        let gateway_token_matches =
+            current_gateway_token.as_deref() == Some("nova-local-gateway");
+        let schema_matches = current_schema.as_deref() == Some(NOVA_GATEWAY_SCHEMA_VERSION);
         let model_matches = current_model.as_deref() == Some(model.as_str());
         let image_matches =
             expected_image.is_empty() || current_image.as_deref() == Some(expected_image.as_str());
 
-        if proxy_matches && token_matches && model_matches && gateway_token_matches && image_matches
+        if proxy_matches
+            && token_matches
+            && gateway_token_matches
+            && schema_matches
+            && model_matches
+            && image_matches
         {
             println!("[Nova] Proxy container already running with matching config. Reusing.");
             apply_agent_settings(&app, &state)?;
@@ -2471,6 +2471,8 @@ pub async fn start_gateway_with_proxy(
         "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
         "-e".to_string(),
         "OPENCLAW_GATEWAY_TOKEN=nova-local-gateway".to_string(),
+        "-e".to_string(),
+        format!("NOVA_GATEWAY_SCHEMA_VERSION={}", NOVA_GATEWAY_SCHEMA_VERSION),
         "-e".to_string(),
         format!("OPENCLAW_MODEL={}", model),
         "-e".to_string(),
