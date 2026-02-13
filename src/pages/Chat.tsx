@@ -21,24 +21,8 @@ type Message = {
   kind?: "toolResult";
   toolName?: string;
   sentAt?: number | null;
-  assistantPayload?: {
-    events: CalendarEvent[];
-    errors: ToolError[];
-    hadToolPayload: boolean;
-  };
 };
-export type ChatSession = {
-  key: string;
-  label?: string;
-  displayName?: string;
-  derivedTitle?: string;
-  updatedAt?: number | null;
-  pinned?: boolean;
-};
-export type ChatSessionActionRequest =
-  | { id: string; type: "delete"; key: string }
-  | { id: string; type: "pin"; key: string; pinned: boolean }
-  | { id: string; type: "rename"; key: string; label: string };
+export type ChatSession = { key: string; label?: string; displayName?: string; derivedTitle?: string; updatedAt?: number | null };
 type Provider = { id: string; name: string; icon: string; placeholder: string; keyUrl: string };
 type PendingAttachment = { id: string; fileName: string; tempPath: string; savedPath?: string };
 type AuthState = { active_provider: string | null; providers: Array<{ id: string; has_key: boolean }> };
@@ -364,135 +348,6 @@ function stripConversationMetadata(raw: string): string {
   return text.trimStart();
 }
 
-function stripInlineClawdbotMetadata(raw: string): string {
-  let result = "";
-  let cursor = 0;
-
-  while (cursor < raw.length) {
-    const remaining = raw.slice(cursor);
-    const match = /metadata\s*:/i.exec(remaining);
-    if (!match) {
-      result += remaining;
-      break;
-    }
-
-    const matchStart = cursor + match.index;
-    const labelEnd = matchStart + match[0].length;
-    result += raw.slice(cursor, matchStart);
-
-    let i = labelEnd;
-    while (i < raw.length && /\s/.test(raw[i])) i += 1;
-    if (raw[i] !== "{") {
-      result += raw.slice(matchStart, labelEnd);
-      cursor = labelEnd;
-      continue;
-    }
-
-    const objectStart = i;
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    let objectEnd = -1;
-
-    for (; i < raw.length; i += 1) {
-      const ch = raw[i];
-      if (inString) {
-        if (escape) {
-          escape = false;
-        } else if (ch === "\\") {
-          escape = true;
-        } else if (ch === "\"") {
-          inString = false;
-        }
-        continue;
-      }
-      if (ch === "\"") {
-        inString = true;
-        continue;
-      }
-      if (ch === "{") depth += 1;
-      if (ch === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          objectEnd = i;
-          break;
-        }
-      }
-    }
-
-    if (objectEnd < 0) {
-      result += raw.slice(matchStart);
-      break;
-    }
-
-    const objectText = raw.slice(objectStart, objectEnd + 1);
-    if (/[\"']?clawdbot[\"']?\s*:/i.test(objectText)) {
-      cursor = objectEnd + 1;
-      while (cursor < raw.length && raw[cursor] === " ") cursor += 1;
-      continue;
-    }
-
-    result += raw.slice(matchStart, objectEnd + 1);
-    cursor = objectEnd + 1;
-  }
-
-  return result;
-}
-
-function sanitizeAssistantDisplayContent(raw: string): string {
-  if (!raw) return "";
-  let text = stripConversationMetadata(raw);
-  text = stripExternalUntrustedSections(text);
-
-  try {
-    const direct = JSON.parse(text);
-    if (isToolTransportPayload(direct)) {
-      return "";
-    }
-  } catch {
-    // ignore non-JSON
-  }
-
-  // Hide OpenClaw internal skill manifest metadata payloads (machine format).
-  text = text.replace(
-    /^\s*metadata:\s*\{[\s\S]*?"clawdbot"[\s\S]*?\}\s*$/gim,
-    ""
-  );
-  text = text.replace(
-    /^\s*metadata:\s*(?:\r?\n[ \t]+[^\n]*)+/gim,
-    (block) => (/(?:^|\n)\s*clawdbot\s*:/i.test(block) ? "" : block)
-  );
-  text = stripInlineClawdbotMetadata(text);
-
-  return text.replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function buildAssistantPayload(raw: string) {
-  const cleaned = sanitizeAssistantDisplayContent(raw);
-  const parsed = parseToolPayloads(cleaned);
-  return {
-    content: parsed.cleanText,
-    assistantPayload: {
-      events: parsed.events,
-      errors: parsed.errors,
-      hadToolPayload: parsed.hadToolPayload,
-    },
-  };
-}
-
-function normalizeCachedMessage(message: Message): Message {
-  if (message.role !== "assistant") return message;
-  const prepared = buildAssistantPayload(message.content || "");
-  if (!prepared.content && prepared.assistantPayload.events.length === 0 && prepared.assistantPayload.errors.length === 0) {
-    return { ...message, content: "", assistantPayload: prepared.assistantPayload };
-  }
-  return {
-    ...message,
-    content: prepared.content,
-    assistantPayload: prepared.assistantPayload,
-  };
-}
-
 function parseUtcBracketTimestamp(raw: string): { text: string; sentAt: number | null } {
   if (!raw) return { text: "", sentAt: null };
   const match = raw.match(/^\s*\[[A-Za-z]{3}\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)\s+UTC\]\s*/);
@@ -614,10 +469,10 @@ function normalizeGatewayMessage(message: GatewayMessage, id: string): Message |
   if (roleRaw === "assistant") {
     if (!hasText && !hasNonText) return null;
     if (!hasText) return null;
-    const prepared = buildAssistantPayload(text);
-    if (!prepared.content && prepared.assistantPayload.events.length === 0 && prepared.assistantPayload.errors.length === 0) {
-      return null;
-    }
+    return { id, role: "assistant", content: text, sentAt: messageTimestamp };
+  }
+  if (roleRaw === "toolresult" || roleRaw === "tool_result" || roleRaw === "tool") {
+    if (!hasText) return null;
     return {
       id,
       role: "assistant",
@@ -638,7 +493,6 @@ function normalizeGatewayMessage(message: GatewayMessage, id: string): Message |
       content: prepared.content,
       kind: "toolResult",
       toolName: typeof message.toolName === "string" ? message.toolName : undefined,
-      assistantPayload: prepared.assistantPayload,
       sentAt: messageTimestamp,
     };
   }
@@ -1315,10 +1169,36 @@ export function Chat({
           }
         }
       }
-      if (event.state === "final") {
-        setIsLoading(false);
-        if (event.runId && activeRunIdRef.current === event.runId) {
-          clearActiveRunTracking();
+      setMessages(prev => {
+        const existingIdx = prev.findIndex(m => m.id === event.runId && m.role === "assistant");
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            content: text,
+            kind: normalized?.kind ?? updated[existingIdx].kind,
+            toolName: normalized?.toolName ?? updated[existingIdx].toolName,
+            sentAt: updated[existingIdx].sentAt ?? normalized?.sentAt ?? Date.now(),
+          };
+          return updated;
+        }
+        return [
+          ...prev,
+          {
+            id: event.runId,
+            role: "assistant",
+            content: text,
+            kind: normalized?.kind,
+            toolName: normalized?.toolName,
+            sentAt: normalized?.sentAt ?? Date.now(),
+          },
+        ];
+      });
+      if (normalized && normalized.kind === "toolResult" && event.runId) {
+        const timings = runTimingsRef.current[event.runId];
+        if (timings && !timings.toolSeenAt) {
+          timings.toolSeenAt = Date.now();
+          addDiag(`timing tool_result runId=${event.runId} t=${timings.toolSeenAt - timings.startedAt}ms`);
         }
       }
       if (event.state === "final" && event.runId) {
@@ -1583,8 +1463,6 @@ export function Chat({
     const currentDraft = sendSession ? (draftsRef.current[sendSession] || "") : "";
     const messageContent = content || currentDraft.trim();
     if (!currentSession || !connected || isLoading || (!messageContent && pendingAttachments.length === 0)) return;
-
-    const failedDraftRestore = !content ? currentDraft : null;
 
     const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: messageContent, sentAt: Date.now() };
     setMessages(prev => [...prev, userMessage]);
@@ -2031,26 +1909,9 @@ export function Chat({
           ) : null}
           {messages.map(msg => {
             const normalizedUser = msg.role === "user" ? normalizeUserContent(msg.content, msg.sentAt) : null;
-            const assistantPayload = msg.role === "assistant"
-              ? {
-                  cleanText: msg.content,
-                  events: msg.assistantPayload?.events ?? [],
-                  errors: msg.assistantPayload?.errors ?? [],
-                  hadToolPayload: msg.assistantPayload?.hadToolPayload ?? false,
-                }
-              : null;
             const bodyContent = msg.role === "user" ? normalizedUser?.content ?? "" : msg.content;
             const messageTime = formatMessageTime(msg.role === "user" ? normalizedUser?.sentAt : msg.sentAt);
             if (msg.role === "user" && !bodyContent) {
-              return null;
-            }
-            if (
-              msg.role === "assistant" &&
-              assistantPayload &&
-              !assistantPayload.cleanText &&
-              assistantPayload.events.length === 0 &&
-              assistantPayload.errors.length === 0
-            ) {
               return null;
             }
             return (
@@ -2058,7 +1919,7 @@ export function Chat({
                 <div className={clsx("max-w-[85%]")}>
                   <div className={clsx("px-4 py-2.5 rounded-2xl",
                     msg.role === "user" ? "bg-[var(--purple-accent)] text-white" : "bg-[var(--bg-tertiary)] text-[var(--text-primary)]")}>
-                    {msg.role === "assistant" ? renderAssistantContent(msg, assistantPayload || undefined) : <p className="whitespace-pre-wrap">{bodyContent}</p>}
+                    {msg.role === "assistant" ? renderAssistantContent(msg) : <p className="whitespace-pre-wrap">{bodyContent}</p>}
                   </div>
                   {messageTime ? (
                     <div
