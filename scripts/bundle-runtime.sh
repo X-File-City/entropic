@@ -86,6 +86,10 @@ if [ "$OS" = "Darwin" ]; then
     curl -fSL -o "$LIMA_TMP/lima.tar.gz" "$LIMA_URL"
     tar -xzf "$LIMA_TMP/lima.tar.gz" -C "$LIMA_TMP"
 
+    # Debug: show what was extracted
+    echo "Lima archive contents:"
+    ls -lh "$LIMA_TMP/share/lima/lima-guestagent."* 2>&1 | head -10
+
     # Copy limactl binary
     cp "$LIMA_TMP/bin/limactl" "$RESOURCES_BIN/"
     chmod +x "$RESOURCES_BIN/limactl"
@@ -105,6 +109,10 @@ LIMA_WRAPPER
     mkdir -p "$RESOURCES_BASE/share"
     cp -r "$LIMA_TMP/share/lima" "$RESOURCES_BASE/share/"
 
+    # Verify guest agents were copied
+    echo "Checking for guest agents..."
+    ls -lh "$RESOURCES_BASE/share/lima/lima-guestagent."* 2>&1 || echo "WARNING: No guest agents found after copy!"
+
     rm -rf "$LIMA_TMP"
 
     # Clean up guest agents:
@@ -114,14 +122,21 @@ LIMA_WRAPPER
     # Remove all .gz versions (Lima can use the uncompressed ones directly)
     rm -f "$RESOURCES_BASE/share/lima/lima-guestagent."*.gz
     # Remove guest agents for other architectures
+    shopt -s nullglob  # Don't expand to literal string if no matches
     for agent in "$RESOURCES_BASE/share/lima/lima-guestagent."*; do
         case "$agent" in
-            *".Linux-${ARCH_NORMALIZED}") ;; # keep target arch
-            *) echo "  Removing $(basename "$agent")" && rm -f "$agent" ;;
+            *".Linux-${ARCH_NORMALIZED}")
+                echo "  Keeping: $(basename "$agent")"
+                ;; # keep target arch
+            *)
+                echo "  Removing: $(basename "$agent")"
+                rm -f "$agent"
+                ;;
         esac
     done
+    shopt -u nullglob
     echo "Remaining guest agents:"
-    ls -la "$RESOURCES_BASE/share/lima/lima-guestagent."* 2>/dev/null || true
+    ls -lh "$RESOURCES_BASE/share/lima/lima-guestagent."* 2>/dev/null || echo "ERROR: No guest agents remain!"
 
     # Remove examples directory (not needed at runtime, saves ~1MB)
     rm -rf "$RESOURCES_BASE/share/lima/examples"
