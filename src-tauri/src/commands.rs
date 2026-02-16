@@ -21,6 +21,8 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
+const NOVA_PROXY_DEV_ORIGIN: &str = "http://host.docker.internal:5174";
+
 /// Get the Docker socket path for the current platform.
 /// On macOS, uses Colima socket. On Linux/Windows, uses default.
 fn get_docker_host() -> Option<String> {
@@ -76,6 +78,56 @@ fn docker_binary_usable(candidate: &str) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+fn resolve_container_proxy_base(proxy_url: &str) -> String {
+    let trimmed = proxy_url.trim();
+    if trimmed.is_empty() {
+        return NOVA_PROXY_DEV_ORIGIN.to_string();
+    }
+
+    if trimmed.starts_with('/') {
+        let path = trimmed.trim_start_matches('/');
+        return if path.is_empty() {
+            NOVA_PROXY_DEV_ORIGIN.trim_end_matches('/').to_string()
+        } else {
+            format!("{}/{}", NOVA_PROXY_DEV_ORIGIN.trim_end_matches('/'), path)
+        };
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        if let Ok(mut url) = Url::parse(trimmed) {
+            match url.host_str() {
+                Some("localhost") | Some("127.0.0.1") => {
+                    let had_port = url.port().is_some();
+                    if let Some(host) = Url::parse("http://host.docker.internal:5174")
+                        .ok()
+                        .and_then(|proxy_host| proxy_host.host_str().map(ToString::to_string))
+                    {
+                        let _ = url.set_host(Some(&host));
+                    }
+                    if !had_port {
+                        let _ = url.set_port(Some(5174));
+                    }
+                }
+                _ => {}
+            }
+            return url.to_string().trim_end_matches('/').to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn resolve_container_openai_base(proxy_base: &str) -> String {
+    let trimmed = proxy_base.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        return trimmed.to_string();
+    }
+    if trimmed.is_empty() {
+        return NOVA_PROXY_DEV_ORIGIN.to_string();
+    }
+    format!("{}/v1", trimmed)
 }
 
 /// Find the docker binary.
@@ -414,6 +466,7 @@ pub struct AppState {
     pub api_keys: Mutex<HashMap<String, String>>,
     pub active_provider: Mutex<Option<String>>,
     pub whatsapp_login: Mutex<WhatsAppLoginCache>,
+    pub bridge_server_started: Mutex<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
@@ -432,6 +485,7 @@ impl Default for AppState {
             api_keys: Mutex::new(HashMap::new()),
             active_provider: Mutex::new(None),
             whatsapp_login: Mutex::new(WhatsAppLoginCache::default()),
+            bridge_server_started: Mutex::new(false),
         }
     }
 }
@@ -481,6 +535,16 @@ pub struct AgentProfileState {
     pub googlechat_audience: String,
     pub whatsapp_enabled: bool,
     pub whatsapp_allow_from: String,
+    pub bridge_enabled: bool,
+    pub bridge_tailnet_ip: String,
+    pub bridge_port: u16,
+    pub bridge_pairing_expires_at_ms: u64,
+    pub bridge_device_id: String,
+    pub bridge_device_name: String,
+    pub bridge_devices: Vec<BridgeDeviceSummary>,
+    pub bridge_device_count: usize,
+    pub bridge_online_count: usize,
+    pub bridge_paired: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -488,6 +552,81 @@ pub struct CapabilityState {
     pub id: String,
     pub label: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BridgeState {
+    pub enabled: bool,
+    pub tailnet_ip: String,
+    pub port: u16,
+    pub pairing_expires_at_ms: u64,
+    pub device_id: String,
+    pub device_name: String,
+    pub last_seen_at_ms: u64,
+    pub paired: bool,
+    pub devices: Vec<BridgeDeviceSummary>,
+    pub device_count: usize,
+    pub online_count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BridgeDeviceSummary {
+    pub id: String,
+    pub name: String,
+    pub owner_name: String,
+    pub created_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub scopes: Vec<String>,
+    pub is_online: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BridgePairingPayload {
+    pub status: BridgeState,
+    pub token: String,
+    pub pair_uri: String,
+    pub qr_data_url: String,
+    pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BridgePairRequest {
+    token: String,
+    device_id: String,
+    device_name: Option<String>,
+    owner_name: Option<String>,
+    device_public_key: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct BridgeHeartbeatRequest {
+    device_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct BridgeDeviceRecord {
+    id: String,
+    name: String,
+    owner_name: String,
+    public_key: String,
+    created_at_ms: u64,
+    last_seen_at_ms: u64,
+    scopes: Vec<String>,
+}
+
+impl Default for BridgeDeviceRecord {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            owner_name: String::new(),
+            public_key: String::new(),
+            created_at_ms: 0,
+            last_seen_at_ms: 0,
+            scopes: vec!["chat".to_string()],
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -802,17 +941,10 @@ fn stop_scanner_sidecar() {
     let _ = docker_command().args(["stop", SCANNER_CONTAINER]).output();
 }
 
-/// Stop all Nova containers on app exit.
+/// Preserve Nova containers on app exit; keep state for faster resume.
 /// Called from the Tauri RunEvent::Exit handler.
 pub fn cleanup_on_exit() {
-    println!("[Nova] Cleaning up containers on exit...");
-    // Stop the gateway container
-    let _ = docker_command()
-        .args(["stop", "-t", "5", OPENCLAW_CONTAINER])
-        .output();
-    // Stop the scanner sidecar
-    stop_scanner_sidecar();
-    println!("[Nova] Cleanup complete.");
+    println!("[Nova] App exit requested — preserving running Nova containers.");
 }
 
 fn docker_exec_output(args: &[&str]) -> Result<String, String> {
@@ -1519,51 +1651,62 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
 
     let mut cfg = read_openclaw_config();
 
-    // Ensure model config persists even if apply_agent_settings runs before entrypoint writes.
-    if cfg.pointer("/agents/defaults/model").is_none() {
-        if let Some(model) = read_container_env("OPENCLAW_MODEL") {
-            cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": model });
-        }
+    let proxy_mode = read_container_env("NOVA_PROXY_MODE").is_some();
+    let base_url = read_container_env("NOVA_PROXY_BASE_URL");
+    let model = read_container_env("OPENCLAW_MODEL");
+    let image_model = read_container_env("OPENCLAW_IMAGE_MODEL");
+
+    if let Some(model) = &model {
+        cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": model });
     }
-    if cfg.pointer("/agents/defaults/imageModel").is_none() {
-        if let Some(image_model) = read_container_env("OPENCLAW_IMAGE_MODEL") {
-            cfg["agents"]["defaults"]["imageModel"] = serde_json::json!({ "primary": image_model });
-        }
+    if let Some(image_model) = &image_model {
+        cfg["agents"]["defaults"]["imageModel"] = serde_json::json!({ "primary": image_model });
     }
-    if cfg.pointer("/models/providers/openrouter").is_none() {
-        if let Some(base_url) = read_container_env("NOVA_PROXY_BASE_URL") {
-            let model = read_container_env("OPENCLAW_MODEL")
+    if proxy_mode {
+        if let Some(base_url) = &base_url {
+            let model_id = model
+                .as_ref()
                 .map(|m| {
                     let stripped = m.trim_start_matches("openrouter/").to_string();
                     if stripped == "free" || stripped == "auto" {
-                        m
+                        m.to_string()
                     } else {
                         stripped
                     }
                 })
                 .unwrap_or_default();
-            let image_model = read_container_env("OPENCLAW_IMAGE_MODEL")
+            let image_model_id = image_model
+                .as_ref()
                 .map(|m| {
                     let stripped = m.trim_start_matches("openrouter/").to_string();
                     if stripped == "free" || stripped == "auto" {
-                        m
+                        m.to_string()
                     } else {
                         stripped
                     }
                 })
                 .unwrap_or_default();
             let mut models = Vec::new();
-            if !model.is_empty() {
-                models.push(serde_json::json!({ "id": model, "name": model }));
+
+            if !model_id.is_empty() {
+                models.push(serde_json::json!({ "id": model_id, "name": model_id }));
             }
-            if !image_model.is_empty() && image_model != model {
-                models.push(serde_json::json!({ "id": image_model, "name": image_model }));
+            if !image_model_id.is_empty() && image_model_id != model_id {
+                models.push(serde_json::json!({ "id": image_model_id, "name": image_model_id }));
             }
             cfg["models"]["providers"]["openrouter"] = serde_json::json!({
                 "baseUrl": base_url,
                 "api": "openai-completions",
                 "models": models
             });
+            cfg["tools"]["web"]["search"]["provider"] = serde_json::json!("perplexity");
+            if let Some(web_base_url) = read_container_env("NOVA_WEB_BASE_URL") {
+                cfg["tools"]["web"]["search"]["perplexity"]["baseUrl"] =
+                    serde_json::json!(web_base_url);
+            } else {
+                cfg["tools"]["web"]["search"]["perplexity"]["baseUrl"] =
+                    serde_json::json!(base_url);
+            }
         }
     }
     cfg["agents"]["defaults"]["heartbeat"] = serde_json::json!({
@@ -1706,15 +1849,12 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
     cfg["plugins"]["entries"]["slack"]["enabled"] = serde_json::json!(settings.slack_enabled);
 
     cfg["channels"]["googlechat"]["enabled"] = serde_json::json!(settings.googlechat_enabled);
-    cfg["channels"]["googlechat"]["audienceType"] = serde_json::json!(if settings
-        .googlechat_audience_type
-        .trim()
-        .is_empty()
-    {
-        "app-url"
-    } else {
-        settings.googlechat_audience_type.trim()
-    });
+    cfg["channels"]["googlechat"]["audienceType"] =
+        serde_json::json!(if settings.googlechat_audience_type.trim().is_empty() {
+            "app-url"
+        } else {
+            settings.googlechat_audience_type.trim()
+        });
     cfg["channels"]["googlechat"]["webhookPath"] = serde_json::json!("/googlechat");
     cfg["channels"]["googlechat"]["dm"]["policy"] = serde_json::json!("pairing");
     cfg["channels"]["googlechat"]["groupPolicy"] = serde_json::json!("allowlist");
@@ -1774,15 +1914,8 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
     }
     cfg["plugins"]["entries"]["imessage"]["enabled"] = serde_json::json!(settings.imessage_enabled);
 
-    // Enable web search via Perplexity when in proxy mode (only if not already configured)
-    if cfg.pointer("/tools/web/search/provider").is_none() {
-        if let Some(proxy_base) = read_container_env("NOVA_PROXY_BASE_URL") {
-            if read_container_env("NOVA_PROXY_MODE").is_some() {
-                cfg["tools"]["web"]["search"]["provider"] = serde_json::json!("perplexity");
-                cfg["tools"]["web"]["search"]["perplexity"]["baseUrl"] =
-                    serde_json::json!(proxy_base);
-            }
-        }
+    if settings.bridge_enabled {
+        disable_legacy_messaging_config(&mut cfg);
     }
 
     write_openclaw_config(&cfg)?;
@@ -1868,7 +2001,607 @@ fn effective_gateway_token(app: &AppHandle) -> Result<String, String> {
     }
     expected_gateway_token(app)
 }
+fn now_ms_u64() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
+fn resolve_tailscale_ipv4() -> Option<String> {
+    let output = Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn bridge_device_summaries(settings: &StoredAgentSettings) -> Vec<BridgeDeviceSummary> {
+    let now = now_ms_u64();
+    let mut devices = settings
+        .bridge_devices
+        .iter()
+        .filter(|device| !device.id.trim().is_empty())
+        .map(|device| BridgeDeviceSummary {
+            id: device.id.clone(),
+            name: if device.name.trim().is_empty() {
+                "Nova Mobile".to_string()
+            } else {
+                device.name.clone()
+            },
+            owner_name: if device.owner_name.trim().is_empty() {
+                "Unassigned".to_string()
+            } else {
+                device.owner_name.clone()
+            },
+            created_at_ms: device.created_at_ms,
+            last_seen_at_ms: device.last_seen_at_ms,
+            scopes: if device.scopes.is_empty() {
+                vec!["chat".to_string()]
+            } else {
+                device.scopes.clone()
+            },
+            is_online: device.last_seen_at_ms > 0
+                && now.saturating_sub(device.last_seen_at_ms) <= 120_000,
+        })
+        .collect::<Vec<_>>();
+    devices.sort_by(|a, b| {
+        b.last_seen_at_ms
+            .cmp(&a.last_seen_at_ms)
+            .then_with(|| b.created_at_ms.cmp(&a.created_at_ms))
+    });
+    devices
+}
+
+fn sync_legacy_bridge_fields_from_devices(settings: &mut StoredAgentSettings) {
+    let primary = settings
+        .bridge_devices
+        .iter()
+        .filter(|device| !device.id.trim().is_empty())
+        .max_by(|a, b| {
+            a.last_seen_at_ms
+                .cmp(&b.last_seen_at_ms)
+                .then_with(|| a.created_at_ms.cmp(&b.created_at_ms))
+        });
+
+    if let Some(primary_device) = primary {
+        settings.bridge_device_id = primary_device.id.clone();
+        settings.bridge_device_name = primary_device.name.clone();
+        settings.bridge_device_public_key = primary_device.public_key.clone();
+        settings.bridge_last_seen_at_ms = primary_device.last_seen_at_ms;
+    } else {
+        settings.bridge_device_id.clear();
+        settings.bridge_device_name.clear();
+        settings.bridge_device_public_key.clear();
+        settings.bridge_last_seen_at_ms = 0;
+    }
+}
+
+fn migrate_bridge_devices(settings: &mut StoredAgentSettings) -> bool {
+    let mut changed = false;
+
+    let mut normalized: Vec<BridgeDeviceRecord> = Vec::new();
+    for mut device in settings.bridge_devices.drain(..) {
+        let id = device.id.trim().to_string();
+        if id.is_empty() {
+            changed = true;
+            continue;
+        }
+        device.id = id;
+        if device.name.trim().is_empty() {
+            device.name = "Nova Mobile".to_string();
+            changed = true;
+        }
+        if device.owner_name.trim().is_empty() {
+            device.owner_name = "Unassigned".to_string();
+            changed = true;
+        }
+        if device.scopes.is_empty() {
+            device.scopes = vec!["chat".to_string()];
+            changed = true;
+        }
+        if device.created_at_ms == 0 {
+            device.created_at_ms = if device.last_seen_at_ms > 0 {
+                device.last_seen_at_ms
+            } else {
+                now_ms_u64()
+            };
+            changed = true;
+        }
+        if let Some(existing) = normalized.iter_mut().find(|entry| entry.id == device.id) {
+            if device.last_seen_at_ms >= existing.last_seen_at_ms {
+                *existing = device;
+            }
+            changed = true;
+        } else {
+            normalized.push(device);
+        }
+    }
+
+    if normalized.is_empty() && !settings.bridge_device_id.trim().is_empty() {
+        normalized.push(BridgeDeviceRecord {
+            id: settings.bridge_device_id.trim().to_string(),
+            name: if settings.bridge_device_name.trim().is_empty() {
+                "Nova Mobile".to_string()
+            } else {
+                settings.bridge_device_name.trim().to_string()
+            },
+            owner_name: "Legacy Pairing".to_string(),
+            public_key: settings.bridge_device_public_key.clone(),
+            created_at_ms: if settings.bridge_last_seen_at_ms > 0 {
+                settings.bridge_last_seen_at_ms
+            } else {
+                now_ms_u64()
+            },
+            last_seen_at_ms: settings.bridge_last_seen_at_ms,
+            scopes: vec!["chat".to_string()],
+        });
+        changed = true;
+    }
+
+    if settings.bridge_devices.len() != normalized.len() {
+        changed = true;
+    }
+    settings.bridge_devices = normalized;
+
+    let before = (
+        settings.bridge_device_id.clone(),
+        settings.bridge_device_name.clone(),
+        settings.bridge_device_public_key.clone(),
+        settings.bridge_last_seen_at_ms,
+    );
+    sync_legacy_bridge_fields_from_devices(settings);
+    let after = (
+        settings.bridge_device_id.clone(),
+        settings.bridge_device_name.clone(),
+        settings.bridge_device_public_key.clone(),
+        settings.bridge_last_seen_at_ms,
+    );
+    if before != after {
+        changed = true;
+    }
+
+    changed
+}
+
+fn bridge_status_from_settings(settings: &StoredAgentSettings) -> BridgeState {
+    let devices = bridge_device_summaries(settings);
+    let online_count = devices.iter().filter(|device| device.is_online).count();
+    BridgeState {
+        enabled: settings.bridge_enabled,
+        tailnet_ip: settings.bridge_tailnet_ip.clone(),
+        port: settings.bridge_port,
+        pairing_expires_at_ms: settings.bridge_pairing_expires_at_ms,
+        device_id: settings.bridge_device_id.clone(),
+        device_name: settings.bridge_device_name.clone(),
+        last_seen_at_ms: settings.bridge_last_seen_at_ms,
+        paired: settings.bridge_enabled && !devices.is_empty(),
+        device_count: devices.len(),
+        online_count,
+        devices,
+    }
+}
+
+fn refresh_bridge_tailnet_ip(settings: &mut StoredAgentSettings) {
+    if settings.bridge_tailnet_ip.trim().is_empty() {
+        if let Some(ip) = resolve_tailscale_ipv4() {
+            settings.bridge_tailnet_ip = ip;
+        }
+    }
+}
+
+fn build_bridge_pair_uri(settings: &StoredAgentSettings, token: &str) -> String {
+    let host = if settings.bridge_tailnet_ip.trim().is_empty() {
+        "127.0.0.1".to_string()
+    } else {
+        settings.bridge_tailnet_ip.trim().to_string()
+    };
+    let mut url = match Url::parse("nova-bridge://pair") {
+        Ok(url) => url,
+        Err(_) => return String::new(),
+    };
+    url.query_pairs_mut()
+        .append_pair("host", &host)
+        .append_pair("port", &settings.bridge_port.to_string())
+        .append_pair("token", token)
+        .append_pair("v", "1");
+    url.to_string()
+}
+
+fn build_bridge_qr_data_url(pair_uri: &str) -> Result<String, String> {
+    let qr = qrcode::QrCode::new(pair_uri.as_bytes()).map_err(|e| e.to_string())?;
+    let image = qr
+        .render::<image::Luma<u8>>()
+        .min_dimensions(512, 512)
+        .quiet_zone(true)
+        .build();
+    let dynamic = image::DynamicImage::ImageLuma8(image);
+    let mut bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut bytes);
+    dynamic
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| format!("Failed to render QR image: {}", e))?;
+    Ok(format!("data:image/png;base64,{}", STANDARD.encode(bytes)))
+}
+
+fn disable_legacy_messaging_config(cfg: &mut serde_json::Value) {
+    cfg["channels"]["discord"]["enabled"] = serde_json::json!(false);
+    cfg["channels"]["discord"]["token"] = serde_json::json!("");
+    cfg["plugins"]["entries"]["discord"]["enabled"] = serde_json::json!(false);
+
+    cfg["channels"]["telegram"]["enabled"] = serde_json::json!(false);
+    cfg["channels"]["telegram"]["botToken"] = serde_json::json!("");
+    cfg["plugins"]["entries"]["telegram"]["enabled"] = serde_json::json!(false);
+
+    cfg["channels"]["slack"]["enabled"] = serde_json::json!(false);
+    cfg["channels"]["slack"]["botToken"] = serde_json::json!("");
+    cfg["channels"]["slack"]["appToken"] = serde_json::json!("");
+    cfg["plugins"]["entries"]["slack"]["enabled"] = serde_json::json!(false);
+
+    cfg["channels"]["googlechat"]["enabled"] = serde_json::json!(false);
+    if let Some(obj) = cfg["channels"]["googlechat"].as_object_mut() {
+        obj.remove("serviceAccount");
+        obj.remove("audience");
+    }
+    cfg["plugins"]["entries"]["googlechat"]["enabled"] = serde_json::json!(false);
+
+    cfg["plugins"]["entries"]["whatsapp"]["enabled"] = serde_json::json!(false);
+    if let Some(obj) = cfg["channels"]["whatsapp"].as_object_mut() {
+        obj.remove("allowFrom");
+    }
+
+    cfg["channels"]["imessage"]["enabled"] = serde_json::json!(false);
+    if let Some(obj) = cfg["channels"]["imessage"].as_object_mut() {
+        obj.remove("remoteHost");
+    }
+    cfg["plugins"]["entries"]["imessage"]["enabled"] = serde_json::json!(false);
+}
+
+fn clear_legacy_messaging_settings(settings: &mut StoredAgentSettings) {
+    settings.imessage_enabled = false;
+    settings.discord_enabled = false;
+    settings.discord_token.clear();
+    settings.telegram_enabled = false;
+    settings.telegram_token.clear();
+    settings.slack_enabled = false;
+    settings.slack_bot_token.clear();
+    settings.slack_app_token.clear();
+    settings.googlechat_enabled = false;
+    settings.googlechat_service_account.clear();
+    settings.googlechat_audience.clear();
+    settings.whatsapp_enabled = false;
+    settings.whatsapp_allow_from.clear();
+}
+
+async fn read_http_request(
+    socket: &mut tokio::net::TcpStream,
+) -> Result<(String, String, Vec<u8>), String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 2048];
+
+    loop {
+        let read = timeout(Duration::from_secs(10), socket.read(&mut chunk))
+            .await
+            .map_err(|_| "Request timeout".to_string())?
+            .map_err(|e| format!("Failed to read request: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        if buffer.len() > 64 * 1024 {
+            return Err("Request headers too large".to_string());
+        }
+    }
+
+    let header_end = buffer
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| "Malformed HTTP request".to_string())?;
+    let headers_raw = String::from_utf8_lossy(&buffer[..header_end]);
+    let mut lines = headers_raw.lines();
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "Missing HTTP request line".to_string())?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| "Missing HTTP method".to_string())?
+        .to_string();
+    let path = parts
+        .next()
+        .ok_or_else(|| "Missing HTTP path".to_string())?
+        .to_string();
+
+    let content_length = headers_raw
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    let mut body = buffer[(header_end + 4)..].to_vec();
+    while body.len() < content_length {
+        let read = timeout(Duration::from_secs(10), socket.read(&mut chunk))
+            .await
+            .map_err(|_| "Request body timeout".to_string())?
+            .map_err(|e| format!("Failed to read request body: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    if body.len() > content_length {
+        body.truncate(content_length);
+    }
+
+    Ok((method, path, body))
+}
+
+fn http_json_response(status: u16, status_text: &str, payload: serde_json::Value) -> String {
+    let body = payload.to_string();
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        status_text,
+        body.as_bytes().len(),
+        body
+    )
+}
+
+async fn handle_bridge_http_connection(mut socket: tokio::net::TcpStream, app: AppHandle) {
+    let request = read_http_request(&mut socket).await;
+    let response = match request {
+        Ok((method, path, body)) => {
+            if method == "GET" && path == "/bridge/health" {
+                let mut settings = load_agent_settings(&app);
+                refresh_bridge_tailnet_ip(&mut settings);
+                let _ = save_agent_settings(&app, settings.clone());
+                http_json_response(
+                    200,
+                    "OK",
+                    serde_json::json!({ "ok": true, "status": bridge_status_from_settings(&settings) }),
+                )
+            } else if method == "POST" && path == "/bridge/pair" {
+                let parsed = serde_json::from_slice::<BridgePairRequest>(&body);
+                match parsed {
+                    Ok(req) => {
+                        let mut settings = load_agent_settings(&app);
+                        let now = now_ms_u64();
+                        let token_matches =
+                            settings.bridge_pairing_token.trim() == req.token.trim();
+                        let token_fresh = settings.bridge_pairing_expires_at_ms > now;
+                        let device_id = req.device_id.trim().to_string();
+                        if !settings.bridge_enabled {
+                            http_json_response(
+                                400,
+                                "Bad Request",
+                                serde_json::json!({ "ok": false, "error": "Bridge is disabled in Nova desktop." }),
+                            )
+                        } else if device_id.is_empty() {
+                            http_json_response(
+                                400,
+                                "Bad Request",
+                                serde_json::json!({ "ok": false, "error": "Device id is required." }),
+                            )
+                        } else if !token_matches || !token_fresh {
+                            http_json_response(
+                                401,
+                                "Unauthorized",
+                                serde_json::json!({ "ok": false, "error": "Pairing token is invalid or expired." }),
+                            )
+                        } else {
+                            let device_name = req
+                                .device_name
+                                .as_deref()
+                                .unwrap_or("Nova Mobile")
+                                .trim()
+                                .to_string();
+                            let owner_name = req
+                                .owner_name
+                                .as_deref()
+                                .unwrap_or("Unassigned")
+                                .trim()
+                                .to_string();
+                            let device_public_key =
+                                req.device_public_key.as_deref().unwrap_or("").to_string();
+                            let existing_index = settings
+                                .bridge_devices
+                                .iter()
+                                .position(|device| device.id == device_id);
+
+                            if existing_index.is_none()
+                                && settings.bridge_devices.len() >= MAX_BRIDGE_DEVICES
+                            {
+                                http_json_response(
+                                    429,
+                                    "Too Many Requests",
+                                    serde_json::json!({
+                                        "ok": false,
+                                        "error": format!("Maximum paired device limit reached ({}). Remove a device in Nova Desktop and retry pairing.", MAX_BRIDGE_DEVICES)
+                                    }),
+                                )
+                            } else {
+                                if let Some(index) = existing_index {
+                                    let existing = &mut settings.bridge_devices[index];
+                                    existing.name = if device_name.is_empty() {
+                                        existing.name.clone()
+                                    } else {
+                                        device_name.clone()
+                                    };
+                                    existing.owner_name = if owner_name.is_empty() {
+                                        existing.owner_name.clone()
+                                    } else {
+                                        owner_name.clone()
+                                    };
+                                    if !device_public_key.trim().is_empty() {
+                                        existing.public_key = device_public_key.clone();
+                                    }
+                                    existing.last_seen_at_ms = now;
+                                    if existing.created_at_ms == 0 {
+                                        existing.created_at_ms = now;
+                                    }
+                                    if existing.scopes.is_empty() {
+                                        existing.scopes = vec!["chat".to_string()];
+                                    }
+                                } else {
+                                    settings.bridge_devices.push(BridgeDeviceRecord {
+                                        id: device_id.clone(),
+                                        name: if device_name.is_empty() {
+                                            "Nova Mobile".to_string()
+                                        } else {
+                                            device_name
+                                        },
+                                        owner_name,
+                                        public_key: device_public_key,
+                                        created_at_ms: now,
+                                        last_seen_at_ms: now,
+                                        scopes: vec!["chat".to_string()],
+                                    });
+                                }
+
+                                sync_legacy_bridge_fields_from_devices(&mut settings);
+                                settings.bridge_pairing_token.clear();
+                                settings.bridge_pairing_expires_at_ms = 0;
+                                clear_legacy_messaging_settings(&mut settings);
+                                let _ = save_agent_settings(&app, settings.clone());
+                                let mut cfg = read_openclaw_config();
+                                disable_legacy_messaging_config(&mut cfg);
+                                let _ = write_openclaw_config(&cfg);
+                                let ws_host = if settings.bridge_tailnet_ip.trim().is_empty() {
+                                    "127.0.0.1".to_string()
+                                } else {
+                                    settings.bridge_tailnet_ip.trim().to_string()
+                                };
+                                http_json_response(
+                                    200,
+                                    "OK",
+                                    serde_json::json!({
+                                        "ok": true,
+                                        "status": bridge_status_from_settings(&settings),
+                                        "gateway": {
+                                            "wsUrl": format!("ws://{}:19789", ws_host),
+                                            "token": effective_gateway_token(&app).unwrap_or_default()
+                                        }
+                                    }),
+                                )
+                            }
+                        }
+                    }
+                    Err(_) => http_json_response(
+                        400,
+                        "Bad Request",
+                        serde_json::json!({ "ok": false, "error": "Invalid JSON body." }),
+                    ),
+                }
+            } else if method == "POST" && path == "/bridge/heartbeat" {
+                let parsed = serde_json::from_slice::<BridgeHeartbeatRequest>(&body);
+                match parsed {
+                    Ok(req) => {
+                        let mut settings = load_agent_settings(&app);
+                        let device_id = req.device_id.trim();
+                        if device_id.is_empty() {
+                            http_json_response(
+                                401,
+                                "Unauthorized",
+                                serde_json::json!({ "ok": false, "error": "Unknown device id." }),
+                            )
+                        } else if let Some(device) = settings
+                            .bridge_devices
+                            .iter_mut()
+                            .find(|entry| entry.id == device_id)
+                        {
+                            device.last_seen_at_ms = now_ms_u64();
+                            if device.scopes.is_empty() {
+                                device.scopes = vec!["chat".to_string()];
+                            }
+                            sync_legacy_bridge_fields_from_devices(&mut settings);
+                            let _ = save_agent_settings(&app, settings.clone());
+                            http_json_response(
+                                200,
+                                "OK",
+                                serde_json::json!({ "ok": true, "status": bridge_status_from_settings(&settings) }),
+                            )
+                        } else {
+                            http_json_response(
+                                401,
+                                "Unauthorized",
+                                serde_json::json!({ "ok": false, "error": "Unknown device id." }),
+                            )
+                        }
+                    }
+                    Err(_) => http_json_response(
+                        400,
+                        "Bad Request",
+                        serde_json::json!({ "ok": false, "error": "Invalid JSON body." }),
+                    ),
+                }
+            } else {
+                http_json_response(
+                    404,
+                    "Not Found",
+                    serde_json::json!({ "ok": false, "error": "Unknown endpoint." }),
+                )
+            }
+        }
+        Err(err) => http_json_response(
+            400,
+            "Bad Request",
+            serde_json::json!({ "ok": false, "error": err }),
+        ),
+    };
+    let _ = socket.write_all(response.as_bytes()).await;
+}
+
+async fn run_bridge_server(app: AppHandle, port: u16) -> Result<(), String> {
+    let listener = TcpListener::bind(("0.0.0.0", port))
+        .await
+        .map_err(|e| format!("Failed to bind bridge server on {}: {}", port, e))?;
+    println!("[Nova] Bridge server listening on 0.0.0.0:{}", port);
+    loop {
+        let (socket, _) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("Bridge server accept failed: {}", e))?;
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            handle_bridge_http_connection(socket, app_handle).await;
+        });
+    }
+}
+
+fn ensure_bridge_server_running(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    port: u16,
+) -> Result<(), String> {
+    let mut started = state
+        .bridge_server_started
+        .lock()
+        .map_err(|e| format!("Bridge server lock failed: {}", e))?;
+    if *started {
+        return Ok(());
+    }
+    *started = true;
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = run_bridge_server(app_handle, port).await {
+            eprintln!("[Nova] Bridge server stopped: {}", err);
+        }
+    });
+    Ok(())
+}
 fn redact_env_value(env: &str) -> String {
     const SECRET_ENV_PREFIXES: &[&str] = &[
         "OPENCLAW_GATEWAY_TOKEN=",
@@ -2201,7 +2934,10 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         "-e".to_string(),
         format!("OPENCLAW_GATEWAY_TOKEN={}", gateway_token),
         "-e".to_string(),
-        format!("NOVA_GATEWAY_SCHEMA_VERSION={}", NOVA_GATEWAY_SCHEMA_VERSION),
+        format!(
+            "NOVA_GATEWAY_SCHEMA_VERSION={}",
+            NOVA_GATEWAY_SCHEMA_VERSION
+        ),
         "-e".to_string(),
         format!("OPENCLAW_MODEL={}", model),
         "-e".to_string(),
@@ -2238,7 +2974,7 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         "--network".to_string(),
         "nova-net".to_string(),
         "-p".to_string(),
-        "127.0.0.1:19789:18789".to_string(),
+        gateway_bind.to_string(),
         "openclaw-runtime:latest".to_string(),
     ]);
 
@@ -2254,7 +2990,10 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
 
     // Create and start container with hardened settings
     println!("[Nova] Starting gateway container with model: {}", model);
-    println!("[Nova] Docker command: docker {}", docker_args_for_log(&docker_args));
+    println!(
+        "[Nova] Docker command: docker {}",
+        docker_args_for_log(&docker_args)
+    );
 
     let run = docker_command()
         .args(&docker_args)
@@ -2332,14 +3071,14 @@ pub async fn start_gateway_with_proxy(
     model: String,
     image_model: Option<String>,
 ) -> Result<(), String> {
-    // Convert localhost URLs to host.docker.internal for Docker container access
-    let docker_proxy_url = if proxy_url.contains("localhost") || proxy_url.contains("127.0.0.1") {
-        proxy_url
-            .replace("localhost", "host.docker.internal")
-            .replace("127.0.0.1", "host.docker.internal")
+    let settings = load_agent_settings(&app);
+    let gateway_bind = if settings.bridge_enabled {
+        "0.0.0.0:19789:18789"
     } else {
-        proxy_url.clone()
+        "127.0.0.1:19789:18789"
     };
+    let resolved_proxy_url = resolve_container_proxy_base(&proxy_url);
+    let docker_proxy_api_url = resolve_container_openai_base(&resolved_proxy_url);
     // Ensure runtime (Colima) is running on macOS
     let runtime = get_runtime(&app);
     let status = runtime.check_status();
@@ -2366,7 +3105,7 @@ pub async fn start_gateway_with_proxy(
         .map_err(|e| format!("Failed to check container: {}", e))?;
 
     if !check.stdout.is_empty() {
-        let expected_proxy_env = format!("{}/v1", docker_proxy_url);
+        let expected_proxy_env = docker_proxy_api_url.clone();
         let current_proxy = read_container_env("NOVA_PROXY_BASE_URL");
         let current_token = read_container_env("OPENROUTER_API_KEY");
         let current_gateway_token = read_container_env("OPENCLAW_GATEWAY_TOKEN");
@@ -2413,9 +3152,14 @@ pub async fn start_gateway_with_proxy(
                 }
                 apply_agent_settings(&app, &state)?;
                 start_scanner_sidecar();
-                wait_for_gateway_health_strict(&local_gateway_token, 16).await.map_err(|e| {
-                    format!("Proxy gateway failed strict health check after recovery: {}", e)
-                })?;
+                wait_for_gateway_health_strict(&local_gateway_token, 16)
+                    .await
+                    .map_err(|e| {
+                        format!(
+                            "Proxy gateway failed strict health check after recovery: {}",
+                            e
+                        )
+                    })?;
             }
             return Ok(());
         }
@@ -2470,7 +3214,10 @@ pub async fn start_gateway_with_proxy(
         "-e".to_string(),
         format!("OPENCLAW_GATEWAY_TOKEN={}", local_gateway_token),
         "-e".to_string(),
-        format!("NOVA_GATEWAY_SCHEMA_VERSION={}", NOVA_GATEWAY_SCHEMA_VERSION),
+        format!(
+            "NOVA_GATEWAY_SCHEMA_VERSION={}",
+            NOVA_GATEWAY_SCHEMA_VERSION
+        ),
         "-e".to_string(),
         format!("OPENCLAW_MODEL={}", model),
         "-e".to_string(),
@@ -2481,7 +3228,7 @@ pub async fn start_gateway_with_proxy(
         "-e".to_string(),
         format!("OPENROUTER_API_KEY={}", gateway_token),
         "-e".to_string(),
-        format!("NOVA_PROXY_BASE_URL={}/v1", docker_proxy_url),
+        format!("NOVA_PROXY_BASE_URL={}", docker_proxy_api_url),
     ];
 
     if let Some(image_model) = image_model {
@@ -2493,7 +3240,7 @@ pub async fn start_gateway_with_proxy(
 
     // Nova web base URL for plugin tools (billing + proxy endpoints)
     docker_args.push("-e".to_string());
-    docker_args.push(format!("NOVA_WEB_BASE_URL={}", docker_proxy_url));
+    docker_args.push(format!("NOVA_WEB_BASE_URL={}", resolved_proxy_url));
 
     append_nova_skills_mount(&mut docker_args);
 
@@ -2526,8 +3273,12 @@ pub async fn start_gateway_with_proxy(
 
     // Create and start container
     println!("[Nova] Starting proxy gateway with model: {}", model);
-    println!("[Nova] Proxy URL: {}", docker_proxy_url);
-    println!("[Nova] Docker command: docker {}", docker_args_for_log(&docker_args));
+    println!("[Nova] Proxy URL: {}", resolved_proxy_url);
+    println!("[Nova] Proxy API URL: {}", docker_proxy_api_url);
+    println!(
+        "[Nova] Docker command: docker {}",
+        docker_args_for_log(&docker_args)
+    );
 
     let run = docker_command()
         .args(&docker_args)
@@ -2537,7 +3288,31 @@ pub async fn start_gateway_with_proxy(
     if !run.status.success() {
         let stderr = String::from_utf8_lossy(&run.stderr);
         println!("[Nova] Failed to start proxy container: {}", stderr);
-        return Err(format!("Failed to start container: {}", stderr));
+        if stderr.contains("Conflict. The container name") {
+            println!("[Nova] Existing container conflict detected; attempting cleanup and retry.");
+            let cleanup = docker_command()
+                .args(["rm", "-f", OPENCLAW_CONTAINER])
+                .output()
+                .map_err(|e| format!("Failed to cleanup conflicting container: {}", e))?;
+            if !cleanup.status.success() {
+                let cleanup_stderr = String::from_utf8_lossy(&cleanup.stderr);
+                return Err(format!(
+                    "Failed to start container: {} (conflict cleanup failed: {})",
+                    stderr.trim(),
+                    cleanup_stderr.trim()
+                ));
+            }
+            let rerun = docker_command()
+                .args(&docker_args)
+                .output()
+                .map_err(|e| format!("Failed to rerun container: {}", e))?;
+            if !rerun.status.success() {
+                let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                return Err(format!("Failed to start container: {}", rerun_stderr));
+            }
+        } else {
+            return Err(format!("Failed to start container: {}", stderr));
+        }
     }
 
     println!("[Nova] Proxy container started successfully");
@@ -2567,9 +3342,14 @@ pub async fn start_gateway_with_proxy(
         }
         apply_agent_settings(&app, &state)?;
         start_scanner_sidecar();
-        wait_for_gateway_health_strict(&local_gateway_token, 16).await.map_err(|e| {
-            format!("Proxy gateway failed strict health check after recovery: {}", e)
-        })?;
+        wait_for_gateway_health_strict(&local_gateway_token, 16)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Proxy gateway failed strict health check after recovery: {}",
+                    e
+                )
+            })?;
     }
 
     Ok(())
@@ -2802,7 +3582,20 @@ pub async fn get_agent_profile_state(app: AppHandle) -> Result<AgentProfileState
         .and_then(|v| v.as_str())
         .unwrap_or(&stored.whatsapp_allow_from)
         .to_string();
-
+    let bridge_enabled = stored.bridge_enabled;
+    let bridge_tailnet_ip = stored.bridge_tailnet_ip.clone();
+    let bridge_port = stored.bridge_port;
+    let bridge_pairing_expires_at_ms = stored.bridge_pairing_expires_at_ms;
+    let bridge_device_id = stored.bridge_device_id.clone();
+    let bridge_device_name = stored.bridge_device_name.clone();
+    let bridge_last_seen_at_ms = stored.bridge_last_seen_at_ms;
+    let bridge_devices = bridge_device_summaries(&stored);
+    let bridge_device_count = bridge_devices.len();
+    let bridge_online_count = bridge_devices
+        .iter()
+        .filter(|device| device.is_online)
+        .count();
+    let bridge_paired = bridge_enabled && bridge_device_count > 0;
     let tools = read_container_file("/home/node/.openclaw/workspace/TOOLS.md").unwrap_or_default();
     let capabilities = if tools.trim().is_empty() {
         stored.capabilities.clone()
@@ -3486,11 +4279,7 @@ pub async fn get_clawhub_catalog(
         200
     };
     let fetch_limit_str = fetch_limit.to_string();
-    let normalized_sort = match sort
-        .as_deref()
-        .map(|v| v.trim())
-        .unwrap_or("trending")
-    {
+    let normalized_sort = match sort.as_deref().map(|v| v.trim()).unwrap_or("trending") {
         "newest" => "newest".to_string(),
         "downloads" => "downloads".to_string(),
         "rating" => "rating".to_string(),
@@ -3917,7 +4706,10 @@ pub async fn scan_and_install_clawhub_skill(
     cleanup(&temp_root);
 
     if !install.status.success() {
-        return Err(format!("Skill install failed: {}", command_output_error(&install)));
+        return Err(format!(
+            "Skill install failed: {}",
+            command_output_error(&install)
+        ));
     }
 
     Ok(ClawhubInstallResult {
