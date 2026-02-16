@@ -3846,11 +3846,35 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
             .map_err(|e| format!("Failed to restart container: {}", e))?;
         if !restart.status.success() {
             let stderr = String::from_utf8_lossy(&restart.stderr);
-            return Err(format!(
-                "Gateway failed health check ({}) and restart failed: {}",
-                initial,
-                stderr.trim()
-            ));
+            if stderr.contains("is not running") || stderr.contains("no such container") {
+                println!(
+                    "[Nova] Gateway container is not running after startup; removing and recreating..."
+                );
+                let cleanup = docker_command()
+                    .args(["rm", "-f", OPENCLAW_CONTAINER])
+                    .output()
+                    .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
+                if !cleanup.status.success() {
+                    println!(
+                        "[Nova] Container cleanup warning after restart failure: {}",
+                        String::from_utf8_lossy(&cleanup.stderr)
+                    );
+                }
+                let rerun = docker_command()
+                    .args(&docker_args)
+                    .output()
+                    .map_err(|e| format!("Failed to rerun container: {}", e))?;
+                if !rerun.status.success() {
+                    let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                    return Err(format!("Failed to rerun container: {}", rerun_stderr));
+                }
+            } else {
+                return Err(format!(
+                    "Gateway failed health check ({}) and restart failed: {}",
+                    initial,
+                    stderr.trim()
+                ));
+            }
         }
         apply_agent_settings(&app, &state)?;
         start_scanner_sidecar();
@@ -3918,6 +3942,84 @@ pub async fn start_gateway_with_proxy(
         }
     }
     let local_gateway_token = expected_gateway_token(&app)?;
+    let build_proxy_docker_args = || -> Result<(Vec<String>, GatewayEnvFile), String> {
+        let mut env_entries: Vec<(&str, &str)> = vec![
+            (
+                "OPENCLAW_GATEWAY_TOKEN",
+                local_gateway_token.as_str(),
+            ),
+            (
+                "NOVA_GATEWAY_SCHEMA_VERSION",
+                NOVA_GATEWAY_SCHEMA_VERSION,
+            ),
+            ("OPENCLAW_MODEL", model.as_str()),
+            ("OPENCLAW_MEMORY_SLOT", "memory-core"),
+            ("NOVA_PROXY_MODE", "1"),
+            ("OPENROUTER_API_KEY", gateway_token.as_str()),
+            ("NOVA_PROXY_BASE_URL", docker_proxy_api_url.as_str()),
+            ("NOVA_WEB_BASE_URL", resolved_proxy_url.as_str()),
+        ];
+        if let Some(image_model) = image_model.as_deref() {
+            if !image_model.trim().is_empty() {
+                env_entries.push(("OPENCLAW_IMAGE_MODEL", image_model));
+            }
+        }
+        let env_file = gateway_env_file(&env_entries)?;
+        let env_file_path = env_file.path.to_string_lossy().to_string();
+
+        let mut docker_args = vec![
+            "run".to_string(),
+            "-d".to_string(),
+            "--name".to_string(),
+            "nova-openclaw".to_string(),
+            "--user".to_string(),
+            "1000:1000".to_string(),
+            "--add-host".to_string(),
+            "host.docker.internal:host-gateway".to_string(),
+            "--cap-drop=ALL".to_string(),
+            "--security-opt".to_string(),
+            "no-new-privileges".to_string(),
+            "--read-only".to_string(),
+            "--tmpfs".to_string(),
+            "/tmp:rw,noexec,nosuid,nodev,size=100m".to_string(),
+            "--tmpfs".to_string(),
+            "/run:rw,noexec,nosuid,nodev,size=10m".to_string(),
+            "--tmpfs".to_string(),
+            "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000"
+                .to_string(),
+            "--env-file".to_string(),
+            env_file_path,
+        ];
+
+        append_nova_skills_mount(&mut docker_args);
+
+        docker_args.extend([
+            "-v".to_string(),
+            "nova-openclaw-data:/data".to_string(),
+            "--network".to_string(),
+            "nova-net".to_string(),
+            "-p".to_string(),
+            gateway_bind.to_string(),
+            "openclaw-runtime:latest".to_string(),
+        ]);
+
+        if let Ok(source) = std::env::var("NOVA_DEV_OPENCLAW_SOURCE") {
+            if !source.trim().is_empty() {
+                docker_args.insert(docker_args.len() - 1, "-v".to_string());
+                docker_args.insert(
+                    docker_args.len() - 1,
+                    format!("{}/dist:/app/dist:ro", source),
+                );
+                docker_args.insert(docker_args.len() - 1, "-v".to_string());
+                docker_args.insert(
+                    docker_args.len() - 1,
+                    format!("{}/extensions:/app/extensions:ro", source),
+                );
+            }
+        }
+
+        Ok((docker_args, env_file))
+    };
 
     // Check if container is already running
     let check = docker_command()
@@ -3965,11 +4067,40 @@ pub async fn start_gateway_with_proxy(
                     .map_err(|e| format!("Failed to restart container: {}", e))?;
                 if !restart.status.success() {
                     let stderr = String::from_utf8_lossy(&restart.stderr);
-                    return Err(format!(
-                        "Proxy gateway failed health check ({}) and restart failed: {}",
-                        initial,
-                        stderr.trim()
-                    ));
+                    if stderr.contains("is not running") || stderr.contains("no such container") {
+                        println!(
+                            "[Nova] Proxy gateway container is not running after health check; recreating."
+                        );
+                        let (rerun_args, _rerun_env_file) = build_proxy_docker_args()?;
+                        let cleanup = docker_command()
+                            .args(["rm", "-f", OPENCLAW_CONTAINER])
+                            .output()
+                            .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
+                        if !cleanup.status.success() {
+                            println!(
+                                "[Nova] Container cleanup warning after restart failure: {}",
+                                String::from_utf8_lossy(&cleanup.stderr)
+                            );
+                        }
+                        let rerun = docker_command()
+                            .args(&rerun_args)
+                            .output()
+                            .map_err(|e| format!("Failed to rerun proxy container: {}", e))?;
+                        if !rerun.status.success() {
+                            let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                            return Err(format!(
+                                "Proxy gateway failed health check ({}) and recreate failed: {}",
+                                initial,
+                                rerun_stderr.trim()
+                            ));
+                        }
+                    } else {
+                        return Err(format!(
+                            "Proxy gateway failed health check ({}) and restart failed: {}",
+                            initial,
+                            stderr.trim()
+                        ));
+                    }
                 }
                 apply_agent_settings(&app, &state)?;
                 start_scanner_sidecar();
@@ -4011,83 +4142,7 @@ pub async fn start_gateway_with_proxy(
 
     // Ensure runtime image is available (load from bundle or pull from registry)
     ensure_runtime_image()?;
-
-    // Build docker run command with proxy configuration
-    let mut env_entries: Vec<(&str, &str)> = vec![
-        (
-            "OPENCLAW_GATEWAY_TOKEN",
-            local_gateway_token.as_str(),
-        ),
-        (
-            "NOVA_GATEWAY_SCHEMA_VERSION",
-            NOVA_GATEWAY_SCHEMA_VERSION,
-        ),
-        ("OPENCLAW_MODEL", model.as_str()),
-        ("OPENCLAW_MEMORY_SLOT", "memory-core"),
-        ("NOVA_PROXY_MODE", "1"),
-        ("OPENROUTER_API_KEY", gateway_token.as_str()),
-        ("NOVA_PROXY_BASE_URL", docker_proxy_api_url.as_str()),
-        ("NOVA_WEB_BASE_URL", resolved_proxy_url.as_str()),
-    ];
-    if let Some(image_model) = image_model.as_deref() {
-        if !image_model.trim().is_empty() {
-            env_entries.push(("OPENCLAW_IMAGE_MODEL", image_model));
-        }
-    }
-    let env_file = gateway_env_file(&env_entries)?;
-    let env_file_path = env_file.path.to_string_lossy().to_string();
-
-    let mut docker_args = vec![
-        "run".to_string(),
-        "-d".to_string(),
-        "--name".to_string(),
-        "nova-openclaw".to_string(),
-        "--user".to_string(),
-        "1000:1000".to_string(),
-        "--add-host".to_string(),
-        "host.docker.internal:host-gateway".to_string(),
-        "--cap-drop=ALL".to_string(),
-        "--security-opt".to_string(),
-        "no-new-privileges".to_string(),
-        "--read-only".to_string(),
-        "--tmpfs".to_string(),
-        "/tmp:rw,noexec,nosuid,nodev,size=100m".to_string(),
-        "--tmpfs".to_string(),
-        "/run:rw,noexec,nosuid,nodev,size=10m".to_string(),
-        "--tmpfs".to_string(),
-        "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
-        "--env-file".to_string(),
-        env_file_path,
-    ];
-
-    append_nova_skills_mount(&mut docker_args);
-
-    // Add remaining args (always use bridge networking)
-    docker_args.extend([
-        "-v".to_string(),
-        "nova-openclaw-data:/data".to_string(),
-        "--network".to_string(),
-        "nova-net".to_string(),
-        "-p".to_string(),
-        gateway_bind.to_string(),
-        "openclaw-runtime:latest".to_string(),
-    ]);
-
-    // Dev-only: bind-mount local OpenClaw dist/extensions
-    if let Ok(source) = std::env::var("NOVA_DEV_OPENCLAW_SOURCE") {
-        if !source.trim().is_empty() {
-            docker_args.insert(docker_args.len() - 1, "-v".to_string());
-            docker_args.insert(
-                docker_args.len() - 1,
-                format!("{}/dist:/app/dist:ro", source),
-            );
-            docker_args.insert(docker_args.len() - 1, "-v".to_string());
-            docker_args.insert(
-                docker_args.len() - 1,
-                format!("{}/extensions:/app/extensions:ro", source),
-            );
-        }
-    }
+    let (docker_args, _proxy_env_file) = build_proxy_docker_args()?;
 
     // Create and start container
     println!("[Nova] Starting proxy gateway with model: {}", model);
@@ -4152,11 +4207,35 @@ pub async fn start_gateway_with_proxy(
             .map_err(|e| format!("Failed to restart container: {}", e))?;
         if !restart.status.success() {
             let stderr = String::from_utf8_lossy(&restart.stderr);
-            return Err(format!(
-                "Proxy gateway failed health check ({}) and restart failed: {}",
-                initial,
-                stderr.trim()
-            ));
+            if stderr.contains("is not running") || stderr.contains("no such container") {
+                println!(
+                    "[Nova] Proxy gateway container is not running after startup; removing and recreating..."
+                );
+                let cleanup = docker_command()
+                    .args(["rm", "-f", OPENCLAW_CONTAINER])
+                    .output()
+                    .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
+                if !cleanup.status.success() {
+                    println!(
+                        "[Nova] Container cleanup warning after restart failure: {}",
+                        String::from_utf8_lossy(&cleanup.stderr)
+                    );
+                }
+                let rerun = docker_command()
+                    .args(&docker_args)
+                    .output()
+                    .map_err(|e| format!("Failed to rerun proxy container: {}", e))?;
+                if !rerun.status.success() {
+                    let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                    return Err(format!("Failed to start proxy container after restart failure: {}", rerun_stderr));
+                }
+            } else {
+                return Err(format!(
+                    "Proxy gateway failed health check ({}) and restart failed: {}",
+                    initial,
+                    stderr.trim()
+                ));
+            }
         }
         apply_agent_settings(&app, &state)?;
         start_scanner_sidecar();

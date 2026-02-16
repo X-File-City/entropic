@@ -51,6 +51,10 @@ mkdir -p /home/node/.openclaw/canvas
 mkdir -p /home/node/.openclaw/cron
 mkdir -p /home/node/.openclaw/logs
 mkdir -p /home/node/.openclaw/.cache/qmd
+# OpenClaw resolves state under ~/.openclaw. With HOME set to /home/node/.openclaw
+# for hardened runtime writes, that becomes /home/node/.openclaw/.openclaw.
+# Keep both paths mapped to the same writable tmpfs root.
+ln -sfn /home/node/.openclaw /home/node/.openclaw/.openclaw
 mkdir -p /data/qmd-models
 ln -sfn /data/qmd-models /home/node/.openclaw/.cache/qmd/models
 
