@@ -12,13 +12,14 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
@@ -485,11 +486,12 @@ fn ensure_scanner_image() -> Result<(), String> {
 }
 
 async fn check_gateway_ws_health(ws_url: &str, token: &str) -> Result<bool, String> {
-    let (mut ws, _) = connect_async(ws_url)
+    let connect = timeout(Duration::from_millis(1200), connect_async(ws_url))
         .await
-        .map_err(|e| format!("WebSocket connect failed: {}", e))?;
+        .map_err(|_| "WebSocket connect timeout".to_string())?;
+    let (mut ws, _) = connect.map_err(|e| format!("WebSocket connect failed: {}", e))?;
 
-    let result = timeout(Duration::from_secs(3), async {
+    let result = timeout(Duration::from_millis(1800), async {
         let mut sent_connect = false;
         let mut sent_health = false;
         loop {
@@ -1001,6 +1003,16 @@ const SCANNER_CONTAINER: &str = "nova-skill-scanner";
 const SCANNER_HOST_PORT: &str = "19791";
 const NOVA_GATEWAY_SCHEMA_VERSION: &str = "2026-02-13";
 const MANAGED_PLUGIN_IDS: &[&str] = &["nova-integrations", "nova-x"];
+static GATEWAY_START_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+static APPLIED_AGENT_SETTINGS_FINGERPRINT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn gateway_start_lock() -> &'static AsyncMutex<()> {
+    GATEWAY_START_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+fn applied_agent_settings_fingerprint() -> &'static Mutex<Option<String>> {
+    APPLIED_AGENT_SETTINGS_FINGERPRINT.get_or_init(|| Mutex::new(None))
+}
 
 fn start_scanner_sidecar() {
     // Check if scanner container is already running
@@ -1071,6 +1083,12 @@ fn start_scanner_sidecar() {
         Err(e) => eprintln!("[scanner] Failed to start scanner sidecar: {}", e),
         _ => {}
     }
+}
+
+fn start_scanner_sidecar_background() {
+    tauri::async_runtime::spawn(async {
+        let _ = tokio::task::spawn_blocking(start_scanner_sidecar).await;
+    });
 }
 
 fn stop_scanner_sidecar() {
@@ -1447,6 +1465,77 @@ fn write_container_file_if_missing(path: &str, content: &str) -> Result<(), Stri
         }
     }
     write_container_file(path, content)
+}
+
+struct ContainerFileWrite<'a> {
+    path: &'a str,
+    content: &'a str,
+    only_if_missing: bool,
+}
+
+fn sh_single_quote(input: &str) -> String {
+    if input.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+fn write_container_files_batch(files: &[ContainerFileWrite<'_>]) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
+
+    let mut script = String::from("set -eu\n");
+    for file in files {
+        let dir = Path::new(file.path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+        let encoded = STANDARD.encode(file.content.as_bytes());
+        let dir_q = sh_single_quote(&dir);
+        let path_q = sh_single_quote(file.path);
+        let encoded_q = sh_single_quote(&encoded);
+
+        script.push_str(&format!("mkdir -p -- {}\n", dir_q));
+        if file.only_if_missing {
+            script.push_str(&format!(
+                "if [ ! -s {} ]; then printf %s {} | base64 -d > {}; fi\n",
+                path_q, encoded_q, path_q
+            ));
+        } else {
+            script.push_str(&format!(
+                "printf %s {} | base64 -d > {}\n",
+                encoded_q, path_q
+            ));
+        }
+    }
+
+    let mut child = docker_command()
+        .args(["exec", "-i", OPENCLAW_CONTAINER, "sh", "-se"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to batch write files: {}", e))?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin
+            .write_all(script.as_bytes())
+            .map_err(|e| format!("Failed to stream file batch script: {}", e))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to finalize file batch write: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to write files in container: {}",
+            stderr.trim()
+        ));
+    }
+    Ok(())
 }
 
 fn current_local_date() -> String {
@@ -1992,10 +2081,16 @@ fn current_millis() -> u128 {
 
 fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let settings = load_agent_settings(app);
-
-    if !settings.soul.trim().is_empty() {
-        write_container_file("/home/node/.openclaw/workspace/SOUL.md", &settings.soul)?;
-    }
+    let proxy_mode = read_container_env("NOVA_PROXY_MODE").is_some();
+    let base_url = read_container_env("NOVA_PROXY_BASE_URL");
+    let model = read_container_env("OPENCLAW_MODEL");
+    let image_model = read_container_env("OPENCLAW_IMAGE_MODEL");
+    let web_base_url = read_container_env("NOVA_WEB_BASE_URL");
+    let container_id = container_instance_id();
+    let openai_key_for_lancedb = {
+        let keys = state.api_keys.lock().map_err(|e| e.to_string())?;
+        keys.get("openai").cloned()
+    };
 
     let mut hb_body = String::from("# HEARTBEAT.md\n\n");
     if settings.heartbeat_tasks.is_empty() {
@@ -2009,14 +2104,11 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
             }
         }
     }
-    write_container_file("/home/node/.openclaw/workspace/HEARTBEAT.md", &hb_body)?;
-
     let mut tools_body = String::from("# TOOLS.md - Local Notes\n\n## Capabilities\n");
     for cap in &settings.capabilities {
         let mark = if cap.enabled { "x" } else { " " };
         tools_body.push_str(&format!("- [{}] {}\n", mark, cap.label));
     }
-    write_container_file("/home/node/.openclaw/workspace/TOOLS.md", &tools_body)?;
 
     let mut id_body = String::from("# IDENTITY.md - Who Am I?\n\n");
     id_body.push_str(&format!("- **Name:** {}\n", settings.identity_name.trim()));
@@ -2026,7 +2118,6 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
     } else {
         id_body.push_str("- **Avatar:**\n");
     }
-    write_container_file("/home/node/.openclaw/workspace/IDENTITY.md", &id_body)?;
 
     let memory_bootstrap = r#"# MEMORY.md - Long-Term Workspace Memory
 
@@ -2039,7 +2130,6 @@ Use it for durable decisions, preferences, and facts that should persist across 
 - Prefer short, durable notes over transient logs.
 - Move recurring context into this file as it becomes stable.
 "#;
-    write_container_file_if_missing("/home/node/.openclaw/workspace/MEMORY.md", memory_bootstrap)?;
 
     let today = current_local_date();
     let mut daily_path = String::from("/home/node/.openclaw/workspace/memory/");
@@ -2049,15 +2139,76 @@ Use it for durable decisions, preferences, and facts that should persist across 
         "# {date}\n\n- [ ] Add raw notes from this session here while they are still fresh.\n",
         date = today
     );
-    write_container_file_if_missing(&daily_path, &daily_note)?;
+    let fingerprint_payload = serde_json::json!({
+        "container_id": container_id,
+        "proxy_mode": proxy_mode,
+        "base_url": &base_url,
+        "model": &model,
+        "image_model": &image_model,
+        "web_base_url": &web_base_url,
+        "openai_key_for_lancedb": &openai_key_for_lancedb,
+        "settings": &settings,
+        "heartbeat_body": &hb_body,
+        "tools_body": &tools_body,
+        "identity_body": &id_body,
+        "memory_daily_path": &daily_path,
+        "memory_daily_note": &daily_note,
+    });
+    let mut fingerprint_hasher = Sha256::new();
+    let fingerprint_bytes = serde_json::to_vec(&fingerprint_payload)
+        .map_err(|e| format!("Failed to serialize settings fingerprint: {}", e))?;
+    fingerprint_hasher.update(fingerprint_bytes);
+    let settings_fingerprint = format!("{:x}", fingerprint_hasher.finalize());
+    {
+        let cache = applied_agent_settings_fingerprint()
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if cache.as_deref() == Some(settings_fingerprint.as_str()) {
+            return Ok(());
+        }
+    }
+
+    let mut writes: Vec<ContainerFileWrite<'_>> = vec![
+        ContainerFileWrite {
+            path: "/home/node/.openclaw/workspace/HEARTBEAT.md",
+            content: &hb_body,
+            only_if_missing: false,
+        },
+        ContainerFileWrite {
+            path: "/home/node/.openclaw/workspace/TOOLS.md",
+            content: &tools_body,
+            only_if_missing: false,
+        },
+        ContainerFileWrite {
+            path: "/home/node/.openclaw/workspace/IDENTITY.md",
+            content: &id_body,
+            only_if_missing: false,
+        },
+        ContainerFileWrite {
+            path: "/home/node/.openclaw/workspace/MEMORY.md",
+            content: memory_bootstrap,
+            only_if_missing: true,
+        },
+        ContainerFileWrite {
+            path: &daily_path,
+            content: &daily_note,
+            only_if_missing: true,
+        },
+    ];
+    if !settings.soul.trim().is_empty() {
+        writes.insert(
+            0,
+            ContainerFileWrite {
+                path: "/home/node/.openclaw/workspace/SOUL.md",
+                content: &settings.soul,
+                only_if_missing: false,
+            },
+        );
+    }
+    write_container_files_batch(&writes)?;
 
     let mut cfg = read_openclaw_config();
     normalize_openclaw_config(&mut cfg);
-
-    let proxy_mode = read_container_env("NOVA_PROXY_MODE").is_some();
-    let base_url = read_container_env("NOVA_PROXY_BASE_URL");
-    let model = read_container_env("OPENCLAW_MODEL");
-    let image_model = read_container_env("OPENCLAW_IMAGE_MODEL");
 
     if let Some(model) = &model {
         set_openclaw_config_value(
@@ -2119,7 +2270,7 @@ Use it for durable decisions, preferences, and facts that should persist across 
                 &["tools", "web", "search", "provider"],
                 serde_json::json!("perplexity"),
             );
-            if let Some(web_base_url) = read_container_env("NOVA_WEB_BASE_URL") {
+            if let Some(web_base_url) = &web_base_url {
                 set_openclaw_config_value(
                     &mut cfg,
                     &["tools", "web", "search", "perplexity", "baseUrl"],
@@ -2257,8 +2408,7 @@ Use it for durable decisions, preferences, and facts that should persist across 
     }
 
     if memory_slot == "memory-lancedb" {
-        let keys = state.api_keys.lock().map_err(|e| e.to_string())?;
-        if let Some(openai_key) = keys.get("openai") {
+        if let Some(openai_key) = openai_key_for_lancedb.as_deref() {
             set_openclaw_config_value(
                 &mut cfg,
                 &["plugins", "entries", "memory-lancedb", "enabled"],
@@ -2540,6 +2690,12 @@ Use it for durable decisions, preferences, and facts that should persist across 
     }
 
     write_openclaw_config(&cfg)?;
+    {
+        let mut cache = applied_agent_settings_fingerprint()
+            .lock()
+            .map_err(|e| e.to_string())?;
+        *cache = Some(settings_fingerprint);
+    }
     Ok(())
 }
 
@@ -3446,17 +3602,35 @@ async fn wait_for_gateway_health_strict(token: &str, attempts: usize) -> Result<
     let ws_url = gateway_ws_url();
     let mut last_error = String::new();
     for attempt in 1..=attempts {
-        match check_gateway_ws_health(ws_url, token).await {
-            Ok(true) => return Ok(()),
-            Ok(false) => {
-                last_error = "health rpc rejected".to_string();
-            }
-            Err(err) => {
-                last_error = err;
+        let mut should_probe_ws = true;
+        if let Some(status) = container_health_status() {
+            match status.as_str() {
+                "starting" => {
+                    last_error = "container health=starting".to_string();
+                    should_probe_ws = false;
+                }
+                "unhealthy" => {
+                    last_error = "container health=unhealthy".to_string();
+                    should_probe_ws = false;
+                }
+                _ => {}
             }
         }
+
+        if should_probe_ws {
+            match check_gateway_ws_health(ws_url, token).await {
+                Ok(true) => return Ok(()),
+                Ok(false) => {
+                    last_error = "health rpc rejected".to_string();
+                }
+                Err(err) => {
+                    last_error = err;
+                }
+            }
+        }
+
         if attempt < attempts {
-            tokio::time::sleep(Duration::from_millis(750)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
@@ -3467,6 +3641,54 @@ async fn wait_for_gateway_health_strict(token: &str, attempts: usize) -> Result<
         "Gateway failed strict health check at {}: {}",
         ws_url, last_error
     ))
+}
+
+fn container_health_status() -> Option<String> {
+    let output = docker_command()
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Health.Status}}",
+            OPENCLAW_CONTAINER,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if status.is_empty() {
+        None
+    } else {
+        Some(status)
+    }
+}
+
+fn container_instance_id() -> Option<String> {
+    let output = docker_command()
+        .args(["inspect", "--format", "{{.Id}}", OPENCLAW_CONTAINER])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+fn finish_health_wait_or_tolerate_starting(err: String, context: &str) -> Result<(), String> {
+    if err.contains("container health=starting") {
+        println!(
+            "[Nova] {}: {} (continuing; container still warming up)",
+            context, err
+        );
+        return Ok(());
+    }
+    Err(format!("{}: {}", context, err))
 }
 
 fn default_agent_settings() -> StoredAgentSettings {
@@ -3612,6 +3834,8 @@ pub async fn get_auth_state(state: State<'_, AppState>) -> Result<AuthState, Str
 
 #[tauri::command]
 pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let startup_started = Instant::now();
+    let _start_guard = gateway_start_lock().lock().await;
     // Get API keys from state
     let api_keys = state.api_keys.lock().map_err(|e| e.to_string())?.clone();
     let active_provider = state
@@ -3659,6 +3883,10 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
             return Err("Docker is not running. Please start Docker and try again.".to_string());
         }
     }
+    println!(
+        "[Nova] Startup timing: runtime_ready={}ms",
+        startup_started.elapsed().as_millis()
+    );
 
     let gateway_token = expected_gateway_token(&app)?;
 
@@ -3675,7 +3903,7 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
             && current_schema.as_deref() == Some(NOVA_GATEWAY_SCHEMA_VERSION)
         {
             apply_agent_settings(&app, &state)?;
-            start_scanner_sidecar();
+            start_scanner_sidecar_background();
             return Ok(());
         }
 
@@ -3707,7 +3935,12 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         .output(); // Ignore error if already exists
 
     // Ensure runtime image is available (load from bundle or pull from registry)
+    let image_started = Instant::now();
     ensure_runtime_image()?;
+    println!(
+        "[Nova] Startup timing: runtime_image_ready={}ms",
+        image_started.elapsed().as_millis()
+    );
 
     let has_any_local_api_key = api_keys.contains_key("anthropic")
         || api_keys.contains_key("openai")
@@ -3822,6 +4055,7 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         docker_args_for_log(&docker_args)
     );
 
+    let container_launch_started = Instant::now();
     let run = docker_command()
         .args(&docker_args)
         .output()
@@ -3834,60 +4068,88 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
     }
 
     println!("[Nova] Container started successfully");
+    println!(
+        "[Nova] Startup timing: container_launch={}ms",
+        container_launch_started.elapsed().as_millis()
+    );
 
     // Apply persisted settings to the fresh container
+    let settings_started = Instant::now();
     apply_agent_settings(&app, &state)?;
+    println!(
+        "[Nova] Startup timing: post_launch_config={}ms",
+        settings_started.elapsed().as_millis()
+    );
 
-    // Start skill scanner sidecar
-    start_scanner_sidecar();
-
+    let health_started = Instant::now();
     if let Err(initial) = wait_for_gateway_health_strict(&gateway_token, 12).await {
-        println!(
-            "[Nova] Gateway strict health check failed after start, attempting restart: {}",
-            initial
-        );
-        let restart = docker_command()
-            .args(["restart", OPENCLAW_CONTAINER])
-            .output()
-            .map_err(|e| format!("Failed to restart container: {}", e))?;
-        if !restart.status.success() {
-            let stderr = String::from_utf8_lossy(&restart.stderr);
-            if stderr.contains("is not running") || stderr.contains("no such container") {
-                println!(
-                    "[Nova] Gateway container is not running after startup; removing and recreating..."
-                );
-                let cleanup = docker_command()
-                    .args(["rm", "-f", OPENCLAW_CONTAINER])
-                    .output()
-                    .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
-                if !cleanup.status.success() {
+        if matches!(container_health_status().as_deref(), Some("starting")) {
+            println!(
+                "[Nova] Gateway strict health check failed while health=starting; extending wait: {}",
+                initial
+            );
+            if let Err(e) = wait_for_gateway_health_strict(&gateway_token, 16).await {
+                finish_health_wait_or_tolerate_starting(
+                    e,
+                    "Gateway failed strict health check after extended wait",
+                )?;
+            }
+        } else {
+            println!(
+                "[Nova] Gateway strict health check failed after start, attempting restart: {}",
+                initial
+            );
+            let restart = docker_command()
+                .args(["restart", OPENCLAW_CONTAINER])
+                .output()
+                .map_err(|e| format!("Failed to restart container: {}", e))?;
+            if !restart.status.success() {
+                let stderr = String::from_utf8_lossy(&restart.stderr);
+                if stderr.contains("is not running") || stderr.contains("no such container") {
                     println!(
-                        "[Nova] Container cleanup warning after restart failure: {}",
-                        String::from_utf8_lossy(&cleanup.stderr)
+                        "[Nova] Gateway container is not running after startup; removing and recreating..."
                     );
+                    let cleanup = docker_command()
+                        .args(["rm", "-f", OPENCLAW_CONTAINER])
+                        .output()
+                        .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
+                    if !cleanup.status.success() {
+                        println!(
+                            "[Nova] Container cleanup warning after restart failure: {}",
+                            String::from_utf8_lossy(&cleanup.stderr)
+                        );
+                    }
+                    let rerun = docker_command()
+                        .args(&docker_args)
+                        .output()
+                        .map_err(|e| format!("Failed to rerun container: {}", e))?;
+                    if !rerun.status.success() {
+                        let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                        return Err(format!("Failed to rerun container: {}", rerun_stderr));
+                    }
+                } else {
+                    return Err(format!(
+                        "Gateway failed health check ({}) and restart failed: {}",
+                        initial,
+                        stderr.trim()
+                    ));
                 }
-                let rerun = docker_command()
-                    .args(&docker_args)
-                    .output()
-                    .map_err(|e| format!("Failed to rerun container: {}", e))?;
-                if !rerun.status.success() {
-                    let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
-                    return Err(format!("Failed to rerun container: {}", rerun_stderr));
-                }
-            } else {
-                return Err(format!(
-                    "Gateway failed health check ({}) and restart failed: {}",
-                    initial,
-                    stderr.trim()
-                ));
+            }
+            apply_agent_settings(&app, &state)?;
+            if let Err(e) = wait_for_gateway_health_strict(&gateway_token, 16).await {
+                finish_health_wait_or_tolerate_starting(
+                    e,
+                    "Gateway failed strict health check after recovery",
+                )?;
             }
         }
-        apply_agent_settings(&app, &state)?;
-        start_scanner_sidecar();
-        wait_for_gateway_health_strict(&gateway_token, 16)
-            .await
-            .map_err(|e| format!("Gateway failed strict health check after recovery: {}", e))?;
     }
+    start_scanner_sidecar_background();
+    println!(
+        "[Nova] Startup timing: health={}ms total={}ms",
+        health_started.elapsed().as_millis(),
+        startup_started.elapsed().as_millis()
+    );
 
     Ok(())
 }
@@ -3922,6 +4184,8 @@ pub async fn start_gateway_with_proxy(
     model: String,
     image_model: Option<String>,
 ) -> Result<(), String> {
+    let startup_started = Instant::now();
+    let _start_guard = gateway_start_lock().lock().await;
     let settings = load_agent_settings(&app);
     let gateway_bind = if settings.bridge_enabled {
         "0.0.0.0:19789:18789"
@@ -3947,6 +4211,10 @@ pub async fn start_gateway_with_proxy(
             return Err("Docker is not running. Please start Docker and try again.".to_string());
         }
     }
+    println!(
+        "[Nova] Startup timing (proxy): runtime_ready={}ms",
+        startup_started.elapsed().as_millis()
+    );
     let local_gateway_token = expected_gateway_token(&app)?;
     let build_proxy_docker_args = || -> Result<(Vec<String>, GatewayEnvFile), String> {
         let mut env_entries: Vec<(&str, &str)> = vec![
@@ -4060,65 +4328,87 @@ pub async fn start_gateway_with_proxy(
             && image_matches
         {
             println!("[Nova] Proxy container already running with matching config. Reusing.");
+            let reuse_prepare_started = Instant::now();
             apply_agent_settings(&app, &state)?;
-            start_scanner_sidecar();
+            println!(
+                "[Nova] Startup timing (proxy): reused_container_prepare={}ms",
+                reuse_prepare_started.elapsed().as_millis()
+            );
+            let health_started = Instant::now();
             if let Err(initial) = wait_for_gateway_health_strict(&local_gateway_token, 12).await {
-                println!(
-                    "[Nova] Proxy gateway health check failed, attempting container restart: {}",
-                    initial
-                );
-                let restart = docker_command()
-                    .args(["restart", OPENCLAW_CONTAINER])
-                    .output()
-                    .map_err(|e| format!("Failed to restart container: {}", e))?;
-                if !restart.status.success() {
-                    let stderr = String::from_utf8_lossy(&restart.stderr);
-                    if stderr.contains("is not running") || stderr.contains("no such container") {
-                        println!(
-                            "[Nova] Proxy gateway container is not running after health check; recreating."
-                        );
-                        let (rerun_args, _rerun_env_file) = build_proxy_docker_args()?;
-                        let cleanup = docker_command()
-                            .args(["rm", "-f", OPENCLAW_CONTAINER])
-                            .output()
-                            .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
-                        if !cleanup.status.success() {
+                if matches!(container_health_status().as_deref(), Some("starting")) {
+                    println!(
+                        "[Nova] Proxy health check failed while health=starting; extending wait: {}",
+                        initial
+                    );
+                    if let Err(e) = wait_for_gateway_health_strict(&local_gateway_token, 16).await {
+                        finish_health_wait_or_tolerate_starting(
+                            e,
+                            "Proxy gateway failed strict health check after extended wait",
+                        )?;
+                    }
+                } else {
+                    println!(
+                        "[Nova] Proxy gateway health check failed, attempting container restart: {}",
+                        initial
+                    );
+                    let restart = docker_command()
+                        .args(["restart", OPENCLAW_CONTAINER])
+                        .output()
+                        .map_err(|e| format!("Failed to restart container: {}", e))?;
+                    if !restart.status.success() {
+                        let stderr = String::from_utf8_lossy(&restart.stderr);
+                        if stderr.contains("is not running") || stderr.contains("no such container")
+                        {
                             println!(
-                                "[Nova] Container cleanup warning after restart failure: {}",
-                                String::from_utf8_lossy(&cleanup.stderr)
+                                "[Nova] Proxy gateway container is not running after health check; recreating."
                             );
-                        }
-                        let rerun = docker_command()
-                            .args(&rerun_args)
-                            .output()
-                            .map_err(|e| format!("Failed to rerun proxy container: {}", e))?;
-                        if !rerun.status.success() {
-                            let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                            let (rerun_args, _rerun_env_file) = build_proxy_docker_args()?;
+                            let cleanup = docker_command()
+                                .args(["rm", "-f", OPENCLAW_CONTAINER])
+                                .output()
+                                .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
+                            if !cleanup.status.success() {
+                                println!(
+                                    "[Nova] Container cleanup warning after restart failure: {}",
+                                    String::from_utf8_lossy(&cleanup.stderr)
+                                );
+                            }
+                            let rerun = docker_command()
+                                .args(&rerun_args)
+                                .output()
+                                .map_err(|e| format!("Failed to rerun proxy container: {}", e))?;
+                            if !rerun.status.success() {
+                                let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                                return Err(format!(
+                                    "Proxy gateway failed health check ({}) and recreate failed: {}",
+                                    initial,
+                                    rerun_stderr.trim()
+                                ));
+                            }
+                        } else {
                             return Err(format!(
-                                "Proxy gateway failed health check ({}) and recreate failed: {}",
+                                "Proxy gateway failed health check ({}) and restart failed: {}",
                                 initial,
-                                rerun_stderr.trim()
+                                stderr.trim()
                             ));
                         }
-                    } else {
-                        return Err(format!(
-                            "Proxy gateway failed health check ({}) and restart failed: {}",
-                            initial,
-                            stderr.trim()
-                        ));
+                    }
+                    apply_agent_settings(&app, &state)?;
+                    if let Err(e) = wait_for_gateway_health_strict(&local_gateway_token, 16).await {
+                        finish_health_wait_or_tolerate_starting(
+                            e,
+                            "Proxy gateway failed strict health check after recovery",
+                        )?;
                     }
                 }
-                apply_agent_settings(&app, &state)?;
-                start_scanner_sidecar();
-                wait_for_gateway_health_strict(&local_gateway_token, 16)
-                    .await
-                    .map_err(|e| {
-                        format!(
-                            "Proxy gateway failed strict health check after recovery: {}",
-                            e
-                        )
-                    })?;
             }
+            println!(
+                "[Nova] Startup timing (proxy): health={}ms total={}ms",
+                health_started.elapsed().as_millis(),
+                startup_started.elapsed().as_millis()
+            );
+            start_scanner_sidecar_background();
             return Ok(());
         }
 
@@ -4147,7 +4437,12 @@ pub async fn start_gateway_with_proxy(
         .output();
 
     // Ensure runtime image is available (load from bundle or pull from registry)
+    let image_started = Instant::now();
     ensure_runtime_image()?;
+    println!(
+        "[Nova] Startup timing (proxy): runtime_image_ready={}ms",
+        image_started.elapsed().as_millis()
+    );
     let (docker_args, _proxy_env_file) = build_proxy_docker_args()?;
 
     // Create and start container
@@ -4159,6 +4454,7 @@ pub async fn start_gateway_with_proxy(
         docker_args_for_log(&docker_args)
     );
 
+    let container_launch_started = Instant::now();
     let run = docker_command()
         .args(&docker_args)
         .output()
@@ -4195,65 +4491,91 @@ pub async fn start_gateway_with_proxy(
     }
 
     println!("[Nova] Proxy container started successfully");
+    println!(
+        "[Nova] Startup timing (proxy): container_launch={}ms",
+        container_launch_started.elapsed().as_millis()
+    );
 
     // Apply persisted settings
+    let settings_started = Instant::now();
     apply_agent_settings(&app, &state)?;
+    println!(
+        "[Nova] Startup timing (proxy): post_launch_config={}ms",
+        settings_started.elapsed().as_millis()
+    );
 
-    // Start skill scanner sidecar
-    start_scanner_sidecar();
-
+    let health_started = Instant::now();
     if let Err(initial) = wait_for_gateway_health_strict(&local_gateway_token, 12).await {
-        println!(
-            "[Nova] Proxy gateway strict health check failed after start, attempting restart: {}",
-            initial
-        );
-        let restart = docker_command()
-            .args(["restart", OPENCLAW_CONTAINER])
-            .output()
-            .map_err(|e| format!("Failed to restart container: {}", e))?;
-        if !restart.status.success() {
-            let stderr = String::from_utf8_lossy(&restart.stderr);
-            if stderr.contains("is not running") || stderr.contains("no such container") {
-                println!(
-                    "[Nova] Proxy gateway container is not running after startup; removing and recreating..."
-                );
-                let cleanup = docker_command()
-                    .args(["rm", "-f", OPENCLAW_CONTAINER])
-                    .output()
-                    .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
-                if !cleanup.status.success() {
+        if matches!(container_health_status().as_deref(), Some("starting")) {
+            println!(
+                "[Nova] Proxy strict health check failed while health=starting; extending wait: {}",
+                initial
+            );
+            if let Err(e) = wait_for_gateway_health_strict(&local_gateway_token, 16).await {
+                finish_health_wait_or_tolerate_starting(
+                    e,
+                    "Proxy gateway failed strict health check after extended wait",
+                )?;
+            }
+        } else {
+            println!(
+                "[Nova] Proxy gateway strict health check failed after start, attempting restart: {}",
+                initial
+            );
+            let restart = docker_command()
+                .args(["restart", OPENCLAW_CONTAINER])
+                .output()
+                .map_err(|e| format!("Failed to restart container: {}", e))?;
+            if !restart.status.success() {
+                let stderr = String::from_utf8_lossy(&restart.stderr);
+                if stderr.contains("is not running") || stderr.contains("no such container") {
                     println!(
-                        "[Nova] Container cleanup warning after restart failure: {}",
-                        String::from_utf8_lossy(&cleanup.stderr)
+                        "[Nova] Proxy gateway container is not running after startup; removing and recreating..."
                     );
+                    let cleanup = docker_command()
+                        .args(["rm", "-f", OPENCLAW_CONTAINER])
+                        .output()
+                        .map_err(|e| format!("Failed to cleanup stale container: {}", e))?;
+                    if !cleanup.status.success() {
+                        println!(
+                            "[Nova] Container cleanup warning after restart failure: {}",
+                            String::from_utf8_lossy(&cleanup.stderr)
+                        );
+                    }
+                    let rerun = docker_command()
+                        .args(&docker_args)
+                        .output()
+                        .map_err(|e| format!("Failed to rerun proxy container: {}", e))?;
+                    if !rerun.status.success() {
+                        let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
+                        return Err(format!(
+                            "Failed to start proxy container after restart failure: {}",
+                            rerun_stderr
+                        ));
+                    }
+                } else {
+                    return Err(format!(
+                        "Proxy gateway failed health check ({}) and restart failed: {}",
+                        initial,
+                        stderr.trim()
+                    ));
                 }
-                let rerun = docker_command()
-                    .args(&docker_args)
-                    .output()
-                    .map_err(|e| format!("Failed to rerun proxy container: {}", e))?;
-                if !rerun.status.success() {
-                    let rerun_stderr = String::from_utf8_lossy(&rerun.stderr);
-                    return Err(format!("Failed to start proxy container after restart failure: {}", rerun_stderr));
-                }
-            } else {
-                return Err(format!(
-                    "Proxy gateway failed health check ({}) and restart failed: {}",
-                    initial,
-                    stderr.trim()
-                ));
+            }
+            apply_agent_settings(&app, &state)?;
+            if let Err(e) = wait_for_gateway_health_strict(&local_gateway_token, 16).await {
+                finish_health_wait_or_tolerate_starting(
+                    e,
+                    "Proxy gateway failed strict health check after recovery",
+                )?;
             }
         }
-        apply_agent_settings(&app, &state)?;
-        start_scanner_sidecar();
-        wait_for_gateway_health_strict(&local_gateway_token, 16)
-            .await
-            .map_err(|e| {
-                format!(
-                    "Proxy gateway failed strict health check after recovery: {}",
-                    e
-                )
-            })?;
     }
+    start_scanner_sidecar_background();
+    println!(
+        "[Nova] Startup timing (proxy): health={}ms total={}ms",
+        health_started.elapsed().as_millis(),
+        startup_started.elapsed().as_millis()
+    );
 
     Ok(())
 }
@@ -4305,18 +4627,7 @@ pub async fn get_gateway_status(app: AppHandle) -> Result<bool, String> {
         }
         Err(e) => {
             println!("[Nova] Gateway health check failed: {}", e);
-            // Check if container is actually healthy
-            let inspect = docker_command()
-                .args([
-                    "inspect",
-                    "--format",
-                    "{{.State.Health.Status}}",
-                    "nova-openclaw",
-                ])
-                .output();
-
-            if let Ok(output) = inspect {
-                let health_status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(health_status) = container_health_status() {
                 println!("[Nova] Container health status: {}", health_status);
             }
             Ok(false)
@@ -5966,40 +6277,46 @@ pub async fn run_first_time_setup(
         return Err("Docker not available".to_string());
     }
 
-    // Check for OpenClaw runtime image
+    // Defer runtime image check/pull to first launch so setup is fast.
     {
         let mut progress = state.setup_progress.lock().map_err(|e| e.to_string())?;
         *progress = SetupProgress {
             stage: "image".to_string(),
-            message: "Checking OpenClaw runtime...".to_string(),
+            message: "Deferring OpenClaw runtime check to first sandbox start...".to_string(),
             percent: 70,
             complete: false,
             error: None,
         };
     }
 
-    match ensure_runtime_image() {
-        Ok(()) => {
-            let mut progress = state.setup_progress.lock().map_err(|e| e.to_string())?;
-            *progress = SetupProgress {
-                stage: "image".to_string(),
-                message: "OpenClaw runtime ready.".to_string(),
-                percent: 90,
-                complete: false,
-                error: None,
-            };
+    tauri::async_runtime::spawn(async move {
+        let preload_started = Instant::now();
+        let preload = tokio::task::spawn_blocking(ensure_runtime_image).await;
+        match preload {
+            Ok(Ok(())) => {
+                println!(
+                    "[Nova] Runtime image preload finished in {}ms",
+                    preload_started.elapsed().as_millis()
+                );
+            }
+            Ok(Err(e)) => {
+                println!("[Nova] Runtime image preload deferred/failed: {}", e);
+            }
+            Err(e) => {
+                println!("[Nova] Runtime image preload task error: {}", e);
+            }
         }
-        Err(e) => {
-            println!("[Nova] Runtime image not available during setup: {}", e);
-            let mut progress = state.setup_progress.lock().map_err(|e| e.to_string())?;
-            *progress = SetupProgress {
-                stage: "image".to_string(),
-                message: "Runtime image will be downloaded on first use.".to_string(),
-                percent: 90,
-                complete: false,
-                error: None,
-            };
-        }
+    });
+
+    {
+        let mut progress = state.setup_progress.lock().map_err(|e| e.to_string())?;
+        *progress = SetupProgress {
+            stage: "image".to_string(),
+            message: "Runtime image will be prepared on first secure sandbox start.".to_string(),
+            percent: 90,
+            complete: false,
+            error: None,
+        };
     }
 
     // Complete

@@ -63,6 +63,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const gatewayTokenRef = useRef<string | null>(null);
   const autoStartAttemptedRef = useRef(false);
   const startGatewayAttemptRef = useRef(0);
+  const startGatewayInFlightRef = useRef(false);
   const retryAttemptRef = useRef(0);
   const retryTimeoutRef = useRef<number | null>(null);
   const retryIntervalRef = useRef<number | null>(null);
@@ -280,7 +281,15 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       console.log("[Nova] Skipping proxy flow - auth not ready or using local keys");
       return false;
     }
+    if (startGatewayInFlightRef.current) {
+      console.log("[Nova] Waiting for in-flight gateway start attempt to finish");
+      while (startGatewayInFlightRef.current) {
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      return checkGateway();
+    }
 
+    startGatewayInFlightRef.current = true;
     const attemptId = ++startGatewayAttemptRef.current;
     setStartupError(null);
     setShowGatewayStartup(true);
@@ -335,33 +344,10 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       console.log("[Nova] start_gateway_with_proxy completed");
 
       setGatewayStartupStage("health");
-      const startedAt = Date.now();
-      let healthy = false;
-      while (Date.now() - startedAt < 20000) {
-        const running = await checkGateway();
-        if (running) {
-          healthy = true;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-      if (!healthy) {
-        setStartupError({
-          message: "Secure sandbox did not become ready in time. Nova will retry.",
-        });
-        if (allowRetry) {
-          scheduleGatewayRetry(() => {
-            startGatewayProxyFlow({ model, image, stopFirst, allowRetry });
-          });
-        } else {
-          setGatewayStartupStage("idle");
-          setShowGatewayStartup(false);
-        }
-        return false;
-      }
       if (startGatewayAttemptRef.current !== attemptId) {
         return false;
       }
+      setGatewayRunning(true);
       clearGatewayRetry();
       setStartupError(null);
       setGatewayStartupStage("idle");
@@ -427,6 +413,8 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         setShowGatewayStartup(false);
       }
       return false;
+    } finally {
+      startGatewayInFlightRef.current = false;
     }
   }
 
