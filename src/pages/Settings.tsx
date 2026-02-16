@@ -23,6 +23,12 @@ type Props = {
   onImageModelChange: (model: string) => void;
 };
 
+type AgentProfileState = {
+  memory_sessions_enabled?: boolean;
+  memory_enabled?: boolean;
+  soul?: string;
+};
+
 function SettingsGroup({ title, children }: { title?: string, children: React.ReactNode }) {
   return (
     <div className="mb-8">
@@ -89,6 +95,8 @@ export function Settings({
   const [apiKeys, setApiKeys] = useState({ anthropic: "", openai: "", google: "" });
   const [profile, setProfile] = useState<AgentProfile>({ name: "Nova" });
   const [saving, setSaving] = useState(false);
+  const [memorySessionIndexing, setMemorySessionIndexing] = useState(false);
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [soul, setSoul] = useState("");
   
   // Wallpaper state
@@ -100,8 +108,10 @@ export function Settings({
   // Load initial state
   useEffect(() => {
     loadProfile().then(setProfile).catch(() => {});
-    invoke<any>("get_agent_profile_state").then(state => {
+    invoke<AgentProfileState>("get_agent_profile_state").then((state) => {
       setSoul(state.soul || "");
+      setMemorySessionIndexing(Boolean(state.memory_sessions_enabled));
+      setMemoryEnabled(state.memory_enabled ?? true);
     }).catch(() => {});
     Store.load("nova-settings.json").then(async (store) => {
       const wp = (await store.get("desktopWallpaper")) as string | null;
@@ -148,6 +158,20 @@ export function Settings({
     { label: "Mentor", text: "You are a wise and patient mentor. Guide the user with insightful advice and Socratic questioning." },
     { label: "Coder", text: "You are an expert software engineer. Focus on clean, efficient code and best practices." },
   ];
+
+  async function handleMemorySessionIndexingChange(nextEnabled: boolean) {
+    setSaving(true);
+    const previous = memorySessionIndexing;
+    setMemorySessionIndexing(nextEnabled);
+    try {
+      await invoke("set_memory_session_indexing", { enabled: nextEnabled });
+    } catch (error) {
+      setMemorySessionIndexing(previous);
+      console.error("[Nova] Failed to update memory session indexing:", error);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="max-w-3xl mx-auto py-8 px-4">
@@ -295,29 +319,29 @@ export function Settings({
         </SettingsRow>
 
         <SettingsRow
-          label="Use Local Keys"
-          icon={Key}
+          label="Conversation Memory Indexing"
+          icon={Sparkles}
           description={
-            useLocalKeys
-              ? "Local provider keys in the gateway container"
-              : proxyEnabled
-                ? `Proxy mode via ${getProxyUrl()}`
-                : isAuthConfigured
-                  ? "Sign in to enable proxy mode"
-                  : "Auth not configured; local keys only"
+            memorySessionIndexing
+              ? "Index conversation summaries in qmd memory"
+              : memoryEnabled
+                ? "Conversation indexing disabled"
+                : "Enable memory first to start indexing"
           }
         >
           <button
-            onClick={() => onUseLocalKeysChange(!useLocalKeys)}
+            onClick={() => handleMemorySessionIndexingChange(!memorySessionIndexing)}
+            disabled={saving || !memoryEnabled}
             className={clsx(
               "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
-              useLocalKeys ? "bg-[var(--system-blue)]" : "bg-[var(--system-gray-4)]"
+              memorySessionIndexing && !saving ? "bg-[var(--system-blue)]" : "bg-[var(--system-gray-4)]",
+              (!memoryEnabled || saving) && "opacity-50"
             )}
           >
             <span
               className={clsx(
                 "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
-                useLocalKeys ? "translate-x-5" : "translate-x-0"
+                memorySessionIndexing && !saving ? "translate-x-5" : "translate-x-0"
               )}
             />
           </button>
@@ -346,6 +370,37 @@ export function Settings({
           </SettingsGroup>
         </div>
       )}
+
+      <SettingsGroup title="Keys">
+        <SettingsRow
+          label="Use Local Keys"
+          icon={Key}
+          description={
+            useLocalKeys
+              ? "Local provider keys in the gateway container"
+              : proxyEnabled
+                ? `Proxy mode via ${getProxyUrl()}`
+                : isAuthConfigured
+                  ? "Sign in to enable proxy mode"
+                  : "Auth not configured; local keys only"
+          }
+        >
+          <button
+            onClick={() => onUseLocalKeysChange(!useLocalKeys)}
+            className={clsx(
+              "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+              useLocalKeys ? "bg-[var(--system-blue)]" : "bg-[var(--system-gray-4)]"
+            )}
+          >
+            <span
+              className={clsx(
+                "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                useLocalKeys ? "translate-x-5" : "translate-x-0"
+              )}
+            />
+          </button>
+        </SettingsRow>
+      </SettingsGroup>
 
       {/* Wallpaper Picker Modal */}
       {wallpaperPickerOpen && (

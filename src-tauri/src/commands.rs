@@ -534,6 +534,7 @@ pub struct AgentProfileState {
     pub heartbeat_tasks: Vec<String>,
     pub memory_enabled: bool,
     pub memory_long_term: bool,
+    pub memory_sessions_enabled: bool,
     pub capabilities: Vec<CapabilityState>,
     pub imessage_enabled: bool,
     pub imessage_cli_path: String,
@@ -789,6 +790,7 @@ struct StoredAgentSettings {
     heartbeat_tasks: Vec<String>,
     memory_enabled: bool,
     memory_long_term: bool,
+    memory_sessions_enabled: bool,
     capabilities: Vec<CapabilityState>,
     identity_name: String,
     identity_avatar: Option<String>,
@@ -820,6 +822,7 @@ impl Default for StoredAgentSettings {
             heartbeat_tasks: Vec::new(),
             memory_enabled: true,
             memory_long_term: false,
+            memory_sessions_enabled: false,
             capabilities: vec![
                 CapabilityState {
                     id: "web".to_string(),
@@ -1322,6 +1325,56 @@ fn write_container_file(path: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn write_container_file_if_missing(path: &str, content: &str) -> Result<(), String> {
+    if let Some(existing) = read_container_file(path) {
+        if !existing.trim().is_empty() {
+            return Ok(());
+        }
+    }
+    write_container_file(path, content)
+}
+
+fn current_local_date() -> String {
+    let days_since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_secs() / 86_400,
+        Err(_) => return "unknown-date".to_string(),
+    };
+
+    let mut year: i32 = 1970;
+    let mut remaining_days = days_since_epoch as i64;
+
+    fn leap_year(y: i32) -> bool {
+        (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+    }
+
+    fn days_in_year(y: i32) -> i64 {
+        if leap_year(y) { 366 } else { 365 }
+    }
+
+    while remaining_days >= days_in_year(year) {
+        remaining_days -= days_in_year(year);
+        year += 1;
+    }
+
+    let month_lengths = [31u32, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    for (idx, days) in month_lengths.iter().enumerate() {
+        let mut day_count = *days as i64;
+        if idx == 1 && leap_year(year) {
+            day_count += 1;
+        }
+        if remaining_days >= day_count {
+            remaining_days -= day_count;
+            month += 1;
+        } else {
+            break;
+        }
+    }
+
+    let day = remaining_days + 1;
+    format!("{:04}-{:02}-{:02}", year, month, day)
+}
+
 fn read_openclaw_config() -> serde_json::Value {
     if let Some(raw) = read_container_file("/home/node/.openclaw/openclaw.json") {
         if let Ok(val) = serde_json::from_str(&raw) {
@@ -1360,12 +1413,113 @@ fn write_openclaw_config(value: &serde_json::Value) -> Result<(), String> {
     write_container_file("/home/node/.openclaw/openclaw.json", &payload)
 }
 
-fn apply_default_qmd_memory_config(cfg: &mut serde_json::Value, _slot: &str) {
-    // OpenClaw >= 2026.1.29 removed the top-level "memory" key from its config schema.
-    // The memory-core plugin now handles memory search internally via api.runtime.tools.
-    // Clean up any legacy "memory" block that might still be present.
-    if let Some(root) = cfg.as_object_mut() {
-        root.remove("memory");
+fn apply_default_qmd_memory_config(cfg: &mut serde_json::Value, slot: &str, sessions_enabled: bool) {
+    if !cfg.is_object() {
+        *cfg = serde_json::json!({});
+    }
+
+    let memory_enabled = slot != "none";
+    if memory_enabled {
+        if !cfg.get("memory").is_some_and(|value| value.is_object()) {
+            cfg["memory"] = serde_json::json!({});
+        }
+        let memory = cfg
+            .get_mut("memory")
+            .and_then(|value| value.as_object_mut())
+            .expect("memory object must exist");
+
+        if !memory.contains_key("backend") {
+            memory["backend"] = serde_json::json!("qmd");
+        }
+        if !memory.contains_key("citations") {
+            memory["citations"] = serde_json::json!("auto");
+        }
+        if !memory.get("qmd").is_some_and(|value| value.is_object()) {
+            memory["qmd"] = serde_json::json!({});
+        }
+        let qmd = memory
+            .get_mut("qmd")
+            .and_then(|value| value.as_object_mut())
+            .expect("memory.qmd object must exist");
+
+        if !qmd.contains_key("includeDefaultMemory") {
+            qmd["includeDefaultMemory"] = serde_json::json!(true);
+        }
+        if !qmd.get("sessions").is_some_and(|value| value.is_object()) {
+            qmd["sessions"] = serde_json::json!({});
+        }
+        let sessions = qmd
+            .get_mut("sessions")
+            .and_then(|value| value.as_object_mut())
+            .expect("memory.qmd.sessions object must exist");
+        sessions["enabled"] = serde_json::json!(sessions_enabled);
+
+        if !qmd.get("update").is_some_and(|value| value.is_object()) {
+            qmd["update"] = serde_json::json!({});
+        }
+        let update = qmd
+            .get_mut("update")
+            .and_then(|value| value.as_object_mut())
+            .expect("memory.qmd.update object must exist");
+        if !update.contains_key("interval") {
+            update["interval"] = serde_json::json!("5m");
+        }
+        if !update.contains_key("debounceMs") {
+            update["debounceMs"] = serde_json::json!(15_000);
+        }
+        if !update.contains_key("waitForBootSync") {
+            update["waitForBootSync"] = serde_json::json!(false);
+        }
+
+        if !qmd.get("limits").is_some_and(|value| value.is_object()) {
+            qmd["limits"] = serde_json::json!({});
+        }
+        let limits = qmd
+            .get_mut("limits")
+            .and_then(|value| value.as_object_mut())
+            .expect("memory.qmd.limits object must exist");
+        if !limits.contains_key("maxResults") {
+            limits["maxResults"] = serde_json::json!(6);
+        }
+        if !limits.contains_key("maxSnippetChars") {
+            limits["maxSnippetChars"] = serde_json::json!(700);
+        }
+        if !limits.contains_key("maxInjectedChars") {
+            limits["maxInjectedChars"] = serde_json::json!(700);
+        }
+        if !limits.contains_key("timeoutMs") {
+            limits["timeoutMs"] = serde_json::json!(4000);
+        }
+    }
+
+    if !cfg.get("agents").is_some_and(|value| value.is_object()) {
+        cfg["agents"] = serde_json::json!({});
+    }
+    if !cfg["agents"]
+        .get("defaults")
+        .is_some_and(|value| value.is_object())
+    {
+        cfg["agents"]["defaults"] = serde_json::json!({});
+    }
+    let memory_search_defaults = cfg["agents"]["defaults"]
+        .as_object_mut()
+        .expect("agents.defaults object must exist");
+    let should_enable_memory_search = memory_enabled;
+    if !memory_search_defaults.contains_key("memorySearch") {
+        memory_search_defaults["memorySearch"] = serde_json::json!({
+            "enabled": should_enable_memory_search
+        });
+    } else if let Some(memory_search) = memory_search_defaults
+        .get_mut("memorySearch")
+        .and_then(|value| value.as_object_mut())
+    {
+        if !memory_search.contains_key("enabled") {
+            memory_search["enabled"] = serde_json::json!(should_enable_memory_search);
+        }
+    } else {
+        memory_search_defaults["memorySearch"] = serde_json::json!({
+            "enabled": should_enable_memory_search
+        });
     }
 }
 
@@ -1667,6 +1821,29 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
     }
     write_container_file("/home/node/.openclaw/workspace/IDENTITY.md", &id_body)?;
 
+    let memory_bootstrap = r#"# MEMORY.md - Long-Term Workspace Memory
+
+This file is the high-signal memory for this workspace.
+Use it for durable decisions, preferences, and facts that should persist across sessions.
+
+## Principles
+
+- Keep this file curated and concise.
+- Prefer short, durable notes over transient logs.
+- Move recurring context into this file as it becomes stable.
+"#;
+    write_container_file_if_missing("/home/node/.openclaw/workspace/MEMORY.md", memory_bootstrap)?;
+
+    let today = current_local_date();
+    let mut daily_path = String::from("/home/node/.openclaw/workspace/memory/");
+    daily_path.push_str(&today);
+    daily_path.push_str(".md");
+    let daily_note = format!(
+        "# {date}\n\n- [ ] Add raw notes from this session here while they are still fresh.\n",
+        date = today
+    );
+    write_container_file_if_missing(&daily_path, &daily_note)?;
+
     let mut cfg = read_openclaw_config();
 
     let proxy_mode = read_container_env("NOVA_PROXY_MODE").is_some();
@@ -1727,6 +1904,17 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
             }
         }
     }
+    let memory_enabled = settings.memory_enabled;
+    let memory_slot = if !memory_enabled {
+        "none"
+    } else if settings.memory_long_term {
+        "memory-lancedb"
+    } else {
+        "memory-core"
+    };
+    let memory_sessions_enabled = settings.memory_sessions_enabled;
+    cfg["plugins"]["slots"]["memory"] = serde_json::json!(memory_slot);
+    apply_default_qmd_memory_config(&mut cfg, memory_slot, memory_sessions_enabled);
     cfg["agents"]["defaults"]["heartbeat"] = serde_json::json!({
         "every": settings.heartbeat_every
     });
@@ -1735,15 +1923,6 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
     cfg["agents"]["defaults"]["blockStreamingBreak"] = serde_json::json!("text_end");
     // Persist cron jobs across container restarts.
     cfg["cron"]["store"] = serde_json::json!("/data/cron/jobs.json");
-
-    let slot = if !settings.memory_enabled {
-        "none"
-    } else if settings.memory_long_term {
-        "memory-lancedb"
-    } else {
-        "memory-core"
-    };
-    cfg["plugins"]["slots"]["memory"] = serde_json::json!(slot);
 
     // Ensure Nova integrations plugin is enabled (OAuth bridge tools).
     cfg["plugins"]["entries"]["nova-integrations"]["enabled"] = serde_json::json!(true);
@@ -1818,7 +1997,7 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
         }
     }
 
-    if slot == "memory-lancedb" {
+    if memory_slot == "memory-lancedb" {
         let keys = state.api_keys.lock().map_err(|e| e.to_string())?;
         if let Some(openai_key) = keys.get("openai") {
             cfg["plugins"]["entries"]["memory-lancedb"]["enabled"] = serde_json::json!(true);
@@ -1838,7 +2017,8 @@ fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String>
         .and_then(|v| v.as_str())
         .unwrap_or("none")
         .to_string();
-    apply_default_qmd_memory_config(&mut cfg, &effective_slot);
+    let memory_sessions_enabled = settings.memory_sessions_enabled;
+    apply_default_qmd_memory_config(&mut cfg, &effective_slot, memory_sessions_enabled);
 
     cfg["channels"]["discord"]["enabled"] = serde_json::json!(settings.discord_enabled);
     cfg["channels"]["discord"]["token"] = serde_json::json!(settings.discord_token.clone());
@@ -3503,6 +3683,7 @@ pub async fn get_agent_profile_state(app: AppHandle) -> Result<AgentProfileState
         "memory-lancedb" => (true, true),
         _ => (true, false),
     };
+    let memory_sessions_enabled = stored.memory_sessions_enabled;
 
     let imessage_cfg = cfg.get("channels").and_then(|v| v.get("imessage"));
     let imessage_enabled = imessage_cfg
@@ -3657,6 +3838,7 @@ pub async fn get_agent_profile_state(app: AppHandle) -> Result<AgentProfileState
         } else {
             memory_long_term
         },
+        memory_sessions_enabled,
         capabilities,
         imessage_enabled,
         imessage_cli_path,
@@ -3741,6 +3923,7 @@ pub async fn set_memory(
     long_term: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let mut settings = load_agent_settings(&app);
     let mut cfg = read_openclaw_config();
     let slot = if !memory_enabled {
         "none"
@@ -3766,12 +3949,38 @@ pub async fn set_memory(
         entries.remove("memory-lancedb");
     }
 
-    apply_default_qmd_memory_config(&mut cfg, slot);
+    let memory_sessions_enabled = settings.memory_sessions_enabled;
+    apply_default_qmd_memory_config(&mut cfg, slot, memory_sessions_enabled);
 
     write_openclaw_config(&cfg)?;
-    let mut settings = load_agent_settings(&app);
     settings.memory_enabled = memory_enabled;
     settings.memory_long_term = long_term;
+    save_agent_settings(&app, settings)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_memory_session_indexing(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut settings = load_agent_settings(&app);
+    let mut cfg = read_openclaw_config();
+    let slot = cfg
+        .get("plugins")
+        .and_then(|plugins| plugins.get("slots"))
+        .and_then(|slots| slots.get("memory"))
+        .and_then(|value| value.as_str())
+        .unwrap_or(if settings.memory_enabled {
+            if settings.memory_long_term {
+                "memory-lancedb"
+            } else {
+                "memory-core"
+            }
+        } else {
+            "none"
+        })
+        .to_string();
+    apply_default_qmd_memory_config(&mut cfg, &slot, enabled);
+    write_openclaw_config(&cfg)?;
+    settings.memory_sessions_enabled = enabled;
     save_agent_settings(&app, settings)?;
     Ok(())
 }

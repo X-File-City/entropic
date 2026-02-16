@@ -53,6 +53,34 @@ mkdir -p /home/node/.openclaw/.cache/qmd
 mkdir -p /data/qmd-models
 ln -sfn /data/qmd-models /home/node/.openclaw/.cache/qmd/models
 
+# Seed workspace memory files for first-run QMD-backed context.
+MEMORY_ROOT="/home/node/.openclaw/workspace"
+if [ ! -f "${MEMORY_ROOT}/MEMORY.md" ]; then
+  cat > "${MEMORY_ROOT}/MEMORY.md" << 'EOF'
+# MEMORY.md - Long-Term Workspace Memory
+
+This file is the high-signal memory for this workspace.
+Use it for durable decisions and preferences that should be kept across sessions.
+
+## Principles
+
+- Keep this file curated and concise.
+- Prefer short, durable notes over transient logs.
+- Move recurring context into this file as it becomes stable.
+EOF
+fi
+
+mkdir -p "${MEMORY_ROOT}/memory"
+TODAY_MEM=$(date +%Y-%m-%d)
+DAILY_MEM="${MEMORY_ROOT}/memory/${TODAY_MEM}.md"
+if [ ! -f "${DAILY_MEM}" ]; then
+  cat > "${DAILY_MEM}" << EOF
+# ${TODAY_MEM}
+
+- [ ] Add raw notes from this session here while they are still fresh.
+EOF
+fi
+
 # qmd wrapper:
 # - Forces writable HOME/XDG paths in hardened container mode.
 # - Starts in "light mode" by translating `qmd query` -> `qmd search`

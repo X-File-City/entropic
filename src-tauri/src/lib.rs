@@ -75,6 +75,7 @@ pub fn run() {
             commands::sync_onboarding_to_settings,
             commands::set_heartbeat,
             commands::set_memory,
+            commands::set_memory_session_indexing,
             commands::set_capabilities,
             commands::set_identity,
             commands::set_imessage_config,
