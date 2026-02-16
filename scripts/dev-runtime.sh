@@ -3,12 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-COLIMA_HOME="${NOVA_COLIMA_HOME:-$HOME/.nova/colima-dev}"
+DEFAULT_COLIMA_HOME="$HOME/.nova/colima-dev"
+COLIMA_HOME="${NOVA_COLIMA_HOME:-$DEFAULT_COLIMA_HOME}"
 ACTIVE_DOCKER_HOST=""
 SCRIPT_BIN_DIRS="${PROJECT_ROOT}/src-tauri/target/debug/resources/bin:${PROJECT_ROOT}/src-tauri/resources/bin"
 
 usage() {
-  local default_colima_home="${NOVA_COLIMA_HOME:-$HOME/.nova/colima-dev}"
+  local default_colima_home="${NOVA_COLIMA_HOME:-$DEFAULT_COLIMA_HOME}"
 
   cat <<USAGE
 Usage: ./scripts/dev-runtime.sh <command>
@@ -95,21 +96,73 @@ colima_vm_types=(vz qemu)
 
 resolve_docker_host() {
   local profile=$1
-  local sock="$COLIMA_HOME/$profile/docker.sock"
-  if [ -S "$sock" ]; then
-    echo "unix://$sock"
+  local candidate_homes=(
+    "$COLIMA_HOME"
+    "$DEFAULT_COLIMA_HOME"
+    "$HOME/.nova/colima"
+  )
+  local home
+  local sock
+  for home in "${candidate_homes[@]}"; do
+    sock="$home/$profile/docker.sock"
+    if [ -S "$sock" ]; then
+      echo "unix://$sock"
+      return 0
+    fi
+  done
+  return 1
+}
+
+docker_host_is_available() {
+  local candidate="$1"
+  if [ -z "$candidate" ]; then
+    return 1
+  fi
+
+  DOCKER_HOST="$candidate" "$DOCKER_BIN" info >/dev/null 2>&1
+}
+
+resolve_working_docker_host() {
+  if docker_host_is_available "${ACTIVE_DOCKER_HOST:-}"; then
     return 0
   fi
+
+  # Re-scan known Colima homes in case environment changed across sessions.
+  local profile home sock candidate
+  for profile in "${colima_profiles[@]}"; do
+    for home in \
+      "$COLIMA_HOME" \
+      "$DEFAULT_COLIMA_HOME" \
+      "$HOME/.nova/colima" \
+      "$HOME/.colima"; do
+      [ -d "$home" ] || continue
+      sock="$home/$profile/docker.sock"
+      candidate="unix://$sock"
+      if [ -S "$sock" ] && docker_host_is_available "$candidate"; then
+        ACTIVE_DOCKER_HOST="$candidate"
+        return 0
+      fi
+    done
+  done
+
+  if [ -n "${DOCKER_HOST:-}" ] && docker_host_is_available "${DOCKER_HOST}"; then
+    ACTIVE_DOCKER_HOST="${DOCKER_HOST}"
+    return 0
+  fi
+
   return 1
 }
 
 run_docker() {
+  if ! resolve_working_docker_host; then
+    echo "[dev] Docker socket unavailable; tried host ${ACTIVE_DOCKER_HOST:-<unset>}" >&2
+  fi
   local docker_host="${ACTIVE_DOCKER_HOST:-}"
   DOCKER_HOST="$docker_host" "$DOCKER_BIN" "$@"
 }
 
 is_docker_running() {
-  run_docker info >/dev/null 2>&1
+  resolve_working_docker_host >/dev/null 2>&1 && run_docker info >/dev/null 2>&1
 }
 
 wait_for_docker() {
@@ -130,12 +183,20 @@ wait_for_docker() {
 
 colima_running_profile() {
   local profile=$1
-  local sock="$COLIMA_HOME/$profile/docker.sock"
-
-  if [ -S "$sock" ]; then
-    ACTIVE_DOCKER_HOST="unix://$sock"
-    return 0
-  fi
+  local sock
+  local home
+  local candidate_homes=(
+    "$COLIMA_HOME"
+    "$DEFAULT_COLIMA_HOME"
+    "$HOME/.nova/colima"
+  )
+  for home in "${candidate_homes[@]}"; do
+    sock="$home/$profile/docker.sock"
+    if [ -S "$sock" ]; then
+      ACTIVE_DOCKER_HOST="unix://$sock"
+      return 0
+    fi
+  done
 
   if [ -n "${COLIMA_BIN:-}" ] && run_colima status --profile "$profile" 2>/dev/null | grep -qi "running"; then
     return 0
