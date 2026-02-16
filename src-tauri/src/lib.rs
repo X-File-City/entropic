@@ -3,9 +3,64 @@ mod runtime;
 
 use rand::RngCore;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::panic::{self, PanicHookInfo};
+use std::process;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
+fn startup_error_log_path() -> std::path::PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join("nova-runtime.log"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/nova-runtime.log"))
+}
+
+fn append_startup_log(message: &str) {
+    let log_path = startup_error_log_path();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{}] [startup] {}", ts, message);
+    }
+}
+
+fn panic_payload_to_string(info: &PanicHookInfo) -> String {
+    if let Some(s) = info.payload().downcast_ref::<&str>() {
+        return s.to_string();
+    }
+    if let Some(s) = info.payload().downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(location) = info.location() {
+        return format!("panic at {}:{}", location.file(), location.line());
+    }
+    "panic payload unavailable".to_string()
+}
+
+fn install_startup_panic_logger() {
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        let payload = panic_payload_to_string(info);
+        let location = info.location().map_or_else(
+            || "unknown location".to_string(),
+            |l| format!("{}:{}", l.file(), l.line()),
+        );
+        let backtrace = std::backtrace::Backtrace::capture();
+        let msg = format!(
+            "PANIC: payload={payload} location={location} backtrace={:?}",
+            backtrace
+        );
+        append_startup_log(&msg);
+        previous(info);
+    }));
+}
+
 pub fn run() {
+    install_startup_panic_logger();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -106,7 +161,12 @@ pub fn run() {
             commands::upload_workspace_file,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building tauri application")
+        .unwrap_or_else(|error| {
+            let msg = format!("error while building tauri application: {error}");
+            append_startup_log(&msg);
+            eprintln!("[Nova] Startup build failed: {error}");
+            process::exit(1);
+        })
         .run(|app_handle, event| match event {
             RunEvent::WindowEvent {
                 label,
