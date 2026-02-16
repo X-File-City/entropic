@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2 } from "lucide-react";
+import { Loader2, CheckCircle2 } from "lucide-react";
 import { Layout, Page } from "../components/Layout";
 import { Chat, type ChatSession, type ChatSessionActionRequest } from "./Chat";
 import { Store } from "./Store";
@@ -45,6 +45,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [isTogglingGateway, setIsTogglingGateway] = useState(false);
   const [showGatewayStartup, setShowGatewayStartup] = useState(false);
+  const [gatewayStartupStage, setGatewayStartupStage] = useState<"idle" | "credits" | "token" | "launch" | "health">("idle");
   const [startupError, setStartupError] = useState<{
     message: string;
     actions?: Array<{ label: string; onClick: () => void }>;
@@ -283,6 +284,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     const attemptId = ++startGatewayAttemptRef.current;
     setStartupError(null);
     setShowGatewayStartup(true);
+    setGatewayStartupStage("credits");
     setGatewayRunning(false);
     try {
       if (stopFirst) {
@@ -307,6 +309,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         console.warn("[Nova] Balance check failed:", error);
       }
 
+      setGatewayStartupStage("token");
       console.log("[Nova] Creating gateway token...");
       const { token } = await createGatewayToken();
       gatewayTokenRef.current = token;
@@ -321,6 +324,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         proxyImageModel
       });
 
+      setGatewayStartupStage("launch");
       console.log("[Nova] Invoking start_gateway_with_proxy...");
       await invoke("start_gateway_with_proxy", {
         gatewayToken: token,
@@ -330,6 +334,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       });
       console.log("[Nova] start_gateway_with_proxy completed");
 
+      setGatewayStartupStage("health");
       const startedAt = Date.now();
       let healthy = false;
       while (Date.now() - startedAt < 20000) {
@@ -349,6 +354,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             startGatewayProxyFlow({ model, image, stopFirst, allowRetry });
           });
         } else {
+          setGatewayStartupStage("idle");
           setShowGatewayStartup(false);
         }
         return false;
@@ -358,6 +364,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       }
       clearGatewayRetry();
       setStartupError(null);
+      setGatewayStartupStage("idle");
       setShowGatewayStartup(false);
       return true;
     } catch (error: any) {
@@ -379,6 +386,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
           message: "You’re out of credits. Add credits to continue using Nova in proxy mode.",
           actions: [{ label: "Add Credits", onClick: () => setCurrentPage("billing") }],
         });
+        setGatewayStartupStage("idle");
         setShowGatewayStartup(false);
         return false;
       }
@@ -388,6 +396,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
           message: "Your session expired. Please sign in again.",
           actions: [{ label: "Open Settings", onClick: () => setCurrentPage("settings") }],
         });
+        setGatewayStartupStage("idle");
         setShowGatewayStartup(false);
         return false;
       }
@@ -401,6 +410,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             { label: "Use Local Keys", onClick: () => persistUseLocalKeys(true) },
           ],
         });
+        setGatewayStartupStage("idle");
         setShowGatewayStartup(false);
         return false;
       }
@@ -413,6 +423,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
           startGatewayProxyFlow({ model, image, stopFirst, allowRetry });
         });
       } else {
+        setGatewayStartupStage("idle");
         setShowGatewayStartup(false);
       }
       return false;
@@ -491,6 +502,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       setGatewayRunning(running);
       console.log("[Nova] Gateway health check:", running ? "healthy" : "not responding");
       if (running) {
+        setGatewayStartupStage("idle");
         setShowGatewayStartup(false);
         clearGatewayRetry();
       }
@@ -798,11 +810,31 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             </div>
             <div className="mt-4 space-y-2 text-xs text-[var(--text-secondary)]">
               <div className="flex items-center gap-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-tertiary)]" />
+                {gatewayStartupStage === "credits" || gatewayStartupStage === "token" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-tertiary)]" />
+                ) : gatewayStartupStage === "launch" || gatewayStartupStage === "health" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
+                ) : (
+                  <div className="w-3.5 h-3.5 rounded-full border border-[var(--border-subtle)]" />
+                )}
+                <span>Creating gateway token</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {gatewayStartupStage === "launch" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-tertiary)]" />
+                ) : gatewayStartupStage === "health" ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
+                ) : (
+                  <div className="w-3.5 h-3.5 rounded-full border border-[var(--border-subtle)]" />
+                )}
                 <span>Launching gateway container</span>
               </div>
               <div className="flex items-center gap-2">
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-tertiary)]" />
+                {gatewayStartupStage === "health" ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--text-tertiary)]" />
+                ) : (
+                  <div className="w-3.5 h-3.5 rounded-full border border-[var(--border-subtle)]" />
+                )}
                 <span>Waiting for health check</span>
               </div>
             </div>

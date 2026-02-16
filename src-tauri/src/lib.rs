@@ -10,6 +10,8 @@ use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
+const STARTUP_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
 fn startup_error_log_path() -> std::path::PathBuf {
     dirs::home_dir()
         .map(|home| home.join("nova-runtime.log"))
@@ -18,6 +20,11 @@ fn startup_error_log_path() -> std::path::PathBuf {
 
 fn append_startup_log(message: &str) {
     let log_path = startup_error_log_path();
+    if let Ok(meta) = fs::metadata(&log_path) {
+        if meta.len() > STARTUP_LOG_MAX_BYTES {
+            let _ = fs::write(&log_path, "");
+        }
+    }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)

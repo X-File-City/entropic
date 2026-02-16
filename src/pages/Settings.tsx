@@ -97,6 +97,7 @@ export function Settings({
   const [saving, setSaving] = useState(false);
   const [memorySessionIndexing, setMemorySessionIndexing] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [memorySessionIndexingError, setMemorySessionIndexingError] = useState<string | null>(null);
   const [soul, setSoul] = useState("");
   
   // Wallpaper state
@@ -161,6 +162,7 @@ export function Settings({
 
   async function handleMemorySessionIndexingChange(nextEnabled: boolean) {
     setSaving(true);
+    setMemorySessionIndexingError(null);
     const previous = memorySessionIndexing;
     setMemorySessionIndexing(nextEnabled);
     try {
@@ -168,6 +170,7 @@ export function Settings({
     } catch (error) {
       setMemorySessionIndexing(previous);
       console.error("[Nova] Failed to update memory session indexing:", error);
+      setMemorySessionIndexingError("Could not update conversation memory indexing. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -346,6 +349,9 @@ export function Settings({
             />
           </button>
         </SettingsRow>
+        {memorySessionIndexingError && (
+          <div className="px-4 pb-4 pt-2 text-xs text-red-600">{memorySessionIndexingError}</div>
+        )}
       </SettingsGroup>
 
 

@@ -3713,6 +3713,16 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
     // Ensure runtime image is available (load from bundle or pull from registry)
     ensure_runtime_image()?;
 
+    let has_any_local_api_key = api_keys.contains_key("anthropic")
+        || api_keys.contains_key("openai")
+        || api_keys.contains_key("google");
+    if !has_any_local_api_key {
+        return Err(
+            "No local API key configured. Add an Anthropic/OpenAI/Google key in Settings, or sign in and disable 'Use Local Keys'."
+                .to_string(),
+        );
+    }
+
     // Determine which provider/model to use based on active provider, then fall back
     let model = match active_provider.as_deref() {
         Some("anthropic") if api_keys.contains_key("anthropic") => {

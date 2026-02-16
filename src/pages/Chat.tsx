@@ -256,6 +256,26 @@ function stripExternalUntrustedSections(raw: string): string {
   return text.trim();
 }
 
+function sanitizeAuthStoreDetails(raw: string): string {
+  if (!raw) return "";
+  return raw
+    .replace(/Auth store:\s*[^\n]+/g, "Auth store: [hidden]")
+    .replace(/\(agentDir:\s*[^)]+\)/g, "(agentDir: [hidden])");
+}
+
+function sanitizeGatewayErrorMessage(raw?: string | null): string {
+  const message = (raw || "").trim();
+  if (!message) return "Chat error";
+
+  const providerMatches = [...message.matchAll(/No API key found for provider "([^"]+)"/g)];
+  const providers = [...new Set(providerMatches.map((m) => m[1]).filter(Boolean))];
+  if (providers.length > 0) {
+    return `Missing API key for ${providers.join(", ")}. Add provider keys in Settings, or disable Use Local Keys.`;
+  }
+
+  return sanitizeAuthStoreDetails(message);
+}
+
 function parseToolPayloads(raw: string): {
   cleanText: string;
   events: CalendarEvent[];
@@ -285,7 +305,7 @@ function parseToolPayloads(raw: string): {
 
   const blocks = extractJsonBlocks(raw);
   if (blocks.length === 0) {
-    return { cleanText: raw, events: [], errors: [], hadToolPayload: false };
+    return { cleanText: sanitizeAuthStoreDetails(raw), events: [], errors: [], hadToolPayload: false };
   }
 
   const events: CalendarEvent[] = [];
@@ -308,7 +328,7 @@ function parseToolPayloads(raw: string): {
         if ((parsed as any).tool || (parsed as any).status === "error") {
           errors.push({
             tool: (parsed as any).tool,
-            error: (parsed as any).error,
+            error: sanitizeGatewayErrorMessage((parsed as any).error),
             status: (parsed as any).status,
           });
           removalRanges.push({ start: block.start, end: block.end });
@@ -321,7 +341,7 @@ function parseToolPayloads(raw: string): {
   }
 
   if (removalRanges.length === 0) {
-    return { cleanText: raw, events: [], errors: [], hadToolPayload: false };
+    return { cleanText: sanitizeAuthStoreDetails(raw), events: [], errors: [], hadToolPayload: false };
   }
 
   let clean = "";
@@ -336,7 +356,7 @@ function parseToolPayloads(raw: string): {
     clean += raw.slice(cursor);
   }
 
-  return { cleanText: clean.trim(), events, errors, hadToolPayload: true };
+  return { cleanText: sanitizeAuthStoreDetails(clean.trim()), events, errors, hadToolPayload: true };
 }
 
 function stripConversationMetadata(raw: string): string {
@@ -454,6 +474,18 @@ function sanitizeAssistantDisplayContent(raw: string): string {
     // ignore non-JSON
   }
 
+  try {
+    const direct = JSON.parse(text);
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+      const error = (direct as Record<string, unknown>).error;
+      if (typeof error === "string" && /No API key found for provider/i.test(error)) {
+        return sanitizeGatewayErrorMessage(error);
+      }
+    }
+  } catch {
+    // ignore non-JSON
+  }
+
   // Hide OpenClaw internal skill manifest metadata payloads (machine format).
   text = text.replace(
     /^\s*metadata:\s*\{[\s\S]*?"clawdbot"[\s\S]*?\}\s*$/gim,
@@ -465,6 +497,7 @@ function sanitizeAssistantDisplayContent(raw: string): string {
   );
   text = stripInlineClawdbotMetadata(text);
 
+  text = sanitizeAuthStoreDetails(text);
   return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
@@ -845,6 +878,7 @@ export function Chat({
   const activeRunIdRef = useRef<string | null>(null);
   const activeRunSessionRef = useRef<string | null>(null);
   const activeRunTimeoutRef = useRef<number | null>(null);
+  const runSessionKeyRef = useRef<Record<string, string>>({});
   const gatewaySessionKeysRef = useRef<Set<string>>(new Set());
   const visibleMessagesSessionRef = useRef<string | null>(null);
 
@@ -1022,6 +1056,11 @@ export function Chat({
     if (activeRunSessionRef.current === from) {
       activeRunSessionRef.current = to;
     }
+    for (const [runId, sessionKey] of Object.entries(runSessionKeyRef.current)) {
+      if (sessionKey === from) {
+        runSessionKeyRef.current[runId] = to;
+      }
+    }
 
     setSessions((prev) => {
       const byKey = new Map<string, ChatSession>();
@@ -1112,6 +1151,7 @@ export function Chat({
     clearActiveRunTracking();
     activeRunIdRef.current = runId;
     activeRunSessionRef.current = sessionKey;
+    runSessionKeyRef.current[runId] = sessionKey;
     activeRunTimeoutRef.current = window.setTimeout(() => {
       if (activeRunIdRef.current !== runId) return;
       setIsLoading(false);
@@ -1306,9 +1346,10 @@ export function Chat({
       const onChat = (event: ChatEvent) => handleChatEvent(event);
       const onAgent = (event: AgentEvent) => handleAgentEvent(event);
       const onError = (err: string) => {
+        const normalizedError = sanitizeGatewayErrorMessage(err);
         const suppressError = gatewayStarting || isConnecting || !gatewayRunning;
         if (!suppressError) {
-          setError(err);
+          setError(normalizedError);
         }
         setIsConnecting(false);
         if (activeRunIdRef.current) {
@@ -1316,8 +1357,8 @@ export function Chat({
           addDiag(`active run interrupted by gateway error runId=${activeRunIdRef.current}`);
           clearActiveRunTracking();
         }
-        setLastGatewayError(err);
-        addDiag(`gateway error: ${err}`);
+        setLastGatewayError(normalizedError);
+        addDiag(`gateway error: ${normalizedError}`);
       };
       client.on("connected", onConnected);
       client.on("disconnected", onDisconnected);
@@ -1407,24 +1448,33 @@ export function Chat({
     if (showDiagnosticsRef.current || event?.state !== "delta") {
       setLastChatEvent(event);
     }
-    if (event?.runId) {
-      lastEventByRunIdRef.current[event.runId] = Date.now();
+    const eventRunId = typeof event?.runId === "string" ? event.runId.trim() : "";
+    if (eventRunId) {
+      lastEventByRunIdRef.current[eventRunId] = Date.now();
     }
     const eventSessionKey =
       typeof event?.sessionKey === "string" ? event.sessionKey.trim() : "";
-    const isActiveRun = Boolean(event?.runId && activeRunIdRef.current === event.runId);
+    if (eventRunId && eventSessionKey && eventSessionKey !== "unknown") {
+      runSessionKeyRef.current[eventRunId] = eventSessionKey;
+    }
+    const knownSessionKey =
+      eventSessionKey && eventSessionKey !== "unknown"
+        ? eventSessionKey
+        : eventRunId
+          ? runSessionKeyRef.current[eventRunId] || ""
+          : "";
+    const isActiveRun = Boolean(eventRunId && activeRunIdRef.current === eventRunId);
     if (
       isActiveRun &&
-      eventSessionKey &&
-      eventSessionKey !== "unknown" &&
+      knownSessionKey &&
       activeRunSessionRef.current &&
-      eventSessionKey !== activeRunSessionRef.current
+      knownSessionKey !== activeRunSessionRef.current
     ) {
-      migrateSessionKey(activeRunSessionRef.current, eventSessionKey);
+      migrateSessionKey(activeRunSessionRef.current, knownSessionKey);
     }
     const isActiveRunTerminalEvent = Boolean(
-      event?.runId &&
-      activeRunIdRef.current === event.runId &&
+      eventRunId &&
+      activeRunIdRef.current === eventRunId &&
       (event.state === "final" || event.state === "error" || event.state === "aborted")
     );
     if (isActiveRunTerminalEvent) {
@@ -1434,14 +1484,13 @@ export function Chat({
     }
     if (
       !isActiveRun &&
-      eventSessionKey &&
       currentSessionRef.current &&
-      eventSessionKey !== currentSessionRef.current
+      (!knownSessionKey || knownSessionKey !== currentSessionRef.current)
     ) {
       return;
     }
     if (event.state === "delta" || event.state === "final") {
-      const normalized = event.message ? normalizeGatewayMessage(event.message as GatewayMessage, event.runId) : null;
+      const normalized = event.message ? normalizeGatewayMessage(event.message as GatewayMessage, eventRunId || "evt") : null;
       const text = normalized?.content ?? "";
       const hasRenderableAssistantPayload = Boolean(
         normalized?.assistantPayload &&
@@ -1452,15 +1501,15 @@ export function Chat({
         if (isProxyAuthFailure(text)) {
           triggerProxyAuthRecovery("chat message");
         }
-        if (event.runId) {
-          const timings = runTimingsRef.current[event.runId];
+        if (eventRunId) {
+          const timings = runTimingsRef.current[eventRunId];
           if (timings && !timings.firstDeltaAt) {
             timings.firstDeltaAt = Date.now();
-            addDiag(`timing first_delta runId=${event.runId} t=${timings.firstDeltaAt - timings.startedAt}ms`);
+            addDiag(`timing first_delta runId=${eventRunId} t=${timings.firstDeltaAt - timings.startedAt}ms`);
           }
         }
         setMessages(prev => {
-          const existingIdx = prev.findIndex(m => m.id === event.runId && m.role === "assistant");
+          const existingIdx = prev.findIndex(m => m.id === eventRunId && m.role === "assistant");
           if (existingIdx >= 0) {
             const updated = [...prev];
             updated[existingIdx] = {
@@ -1476,7 +1525,7 @@ export function Chat({
           return [
             ...prev,
             {
-              id: event.runId,
+              id: eventRunId || crypto.randomUUID(),
               role: "assistant",
               content: text,
               kind: normalized?.kind,
@@ -1499,27 +1548,27 @@ export function Chat({
             }
           });
         }
-        if (normalized && normalized.kind === "toolResult" && event.runId) {
-          const timings = runTimingsRef.current[event.runId];
+        if (normalized && normalized.kind === "toolResult" && eventRunId) {
+          const timings = runTimingsRef.current[eventRunId];
           if (timings && !timings.toolSeenAt) {
             timings.toolSeenAt = Date.now();
-            addDiag(`timing tool_result runId=${event.runId} t=${timings.toolSeenAt - timings.startedAt}ms`);
+            addDiag(`timing tool_result runId=${eventRunId} t=${timings.toolSeenAt - timings.startedAt}ms`);
           }
         }
       }
       if (event.state === "final") {
         setIsLoading(false);
-        if (event.runId && activeRunIdRef.current === event.runId) {
+        if (eventRunId && activeRunIdRef.current === eventRunId) {
           clearActiveRunTracking();
         }
       }
-      if (event.state === "final" && event.runId) {
-        const timings = runTimingsRef.current[event.runId];
+      if (event.state === "final" && eventRunId) {
+        const timings = runTimingsRef.current[eventRunId];
         if (timings && !timings.finalAt) {
           timings.finalAt = Date.now();
-          addDiag(`timing final runId=${event.runId} t=${timings.finalAt - timings.startedAt}ms`);
+          addDiag(`timing final runId=${eventRunId} t=${timings.finalAt - timings.startedAt}ms`);
         }
-        const revertModel = runRevertModelRef.current[event.runId];
+        const revertModel = runRevertModelRef.current[eventRunId];
         if (revertModel && currentSessionRef.current && clientRef.current) {
           clientRef.current
             .patchSession(currentSessionRef.current, { model: revertModel })
@@ -1529,7 +1578,8 @@ export function Chat({
             })
             .catch((err) => addDiag(`routing revert failed: ${String(err)}`));
         }
-        delete runRevertModelRef.current[event.runId];
+        delete runRevertModelRef.current[eventRunId];
+        delete runSessionKeyRef.current[eventRunId];
 
         // Persist the full conversation after assistant response completes
         if (currentSessionRef.current) {
@@ -1549,11 +1599,14 @@ export function Chat({
         }
       }
     } else if (event.state === "error") {
-      const errorMessage = event.errorMessage || "Chat error";
+      const errorMessage = sanitizeGatewayErrorMessage(event.errorMessage || "Chat error");
       setError(errorMessage);
       setIsLoading(false);
-      if (event.runId && activeRunIdRef.current === event.runId) {
+      if (eventRunId && activeRunIdRef.current === eventRunId) {
         clearActiveRunTracking();
+      }
+      if (eventRunId) {
+        delete runSessionKeyRef.current[eventRunId];
       }
       addDiag(`chat error: ${event.errorMessage || "unknown"}`);
       if (isProxyAuthFailure(errorMessage)) {
@@ -1561,8 +1614,11 @@ export function Chat({
       }
     } else if (event.state === "aborted") {
       setIsLoading(false);
-      if (event.runId && activeRunIdRef.current === event.runId) {
+      if (eventRunId && activeRunIdRef.current === eventRunId) {
         clearActiveRunTracking();
+      }
+      if (eventRunId) {
+        delete runSessionKeyRef.current[eventRunId];
       }
       addDiag("chat aborted");
     }
