@@ -61,6 +61,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const [pendingChatAction, setPendingChatAction] = useState<ChatSessionActionRequest | null>(null);
   const gatewayTokenRef = useRef<string | null>(null);
   const autoStartAttemptedRef = useRef(false);
+  const startGatewayAttemptRef = useRef(0);
   const retryAttemptRef = useRef(0);
   const retryTimeoutRef = useRef<number | null>(null);
   const retryIntervalRef = useRef<number | null>(null);
@@ -218,6 +219,30 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     return model.startsWith("openrouter/") ? model : `openrouter/${model}`;
   }
 
+  function extractGatewayStartError(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message || "Failed to start gateway";
+    }
+    if (typeof error === "string") {
+      return error;
+    }
+    const candidate =
+      (error && typeof error === "object" && ("message" in error || "error" in error))
+        ? (error as Record<string, unknown>)
+        : null;
+    if (candidate) {
+      const message = candidate.message;
+      const nestedError = candidate.error;
+      if (typeof message === "string" && message.trim()) {
+        return message.trim();
+      }
+      if (typeof nestedError === "string" && nestedError.trim()) {
+        return nestedError.trim();
+      }
+    }
+    return "Failed to start gateway";
+  }
+
   async function persistUseLocalKeys(value: boolean) {
     setUseLocalKeys(value);
     try {
@@ -255,6 +280,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       return false;
     }
 
+    const attemptId = ++startGatewayAttemptRef.current;
     setStartupError(null);
     setShowGatewayStartup(true);
     setGatewayRunning(false);
@@ -327,18 +353,26 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         }
         return false;
       }
+      if (startGatewayAttemptRef.current !== attemptId) {
+        return false;
+      }
       clearGatewayRetry();
+      setStartupError(null);
       setShowGatewayStartup(false);
       return true;
     } catch (error: any) {
+      if (startGatewayAttemptRef.current !== attemptId) {
+        return false;
+      }
       console.error("[Nova] Proxy start failed:", error);
 
       const isApiError = error instanceof ApiRequestError;
       const status = isApiError ? error.status : undefined;
+      const message = extractGatewayStartError(error);
       const isNetwork =
         (isApiError && error.kind === "network") ||
-        (typeof error?.message === "string" &&
-          /load failed|failed to fetch|network/i.test(error.message));
+        (typeof message === "string" &&
+          /load failed|failed to fetch|network/i.test(message));
 
       if (status === 402) {
         setStartupError({
@@ -372,7 +406,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       }
 
       setStartupError({
-        message: error instanceof Error ? error.message : "Failed to start gateway",
+        message,
       });
       if (allowRetry) {
         scheduleGatewayRetry(() => {
