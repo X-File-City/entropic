@@ -53,8 +53,52 @@ mkdir -p /home/node/.openclaw/.cache/qmd
 mkdir -p /data/qmd-models
 ln -sfn /data/qmd-models /home/node/.openclaw/.cache/qmd/models
 
+setup_qmd_workspace_deps() {
+    local workspace_root="/home/node/.openclaw/workspace"
+    local package_file="${workspace_root}/package.json"
+
+    mkdir -p "${workspace_root}/node_modules"
+
+    if [ ! -f "$package_file" ]; then
+        cat > "$package_file" << 'EOF'
+{
+  "name": "nova-openclaw-workspace",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "tsx": "^4.21.0"
+  }
+}
+EOF
+    fi
+
+    if [ ! -d "${workspace_root}/node_modules/tsx" ]; then
+        if command -v bun >/dev/null 2>&1; then
+            if /home/node/.bun/bin/bun install --cwd "${workspace_root}" >/tmp/qmd-bun-install.log 2>&1; then
+                echo "[entrypoint] qmd workspace dependencies installed via bun."
+            else
+                echo "[entrypoint] WARN: unable to install qmd workspace dependencies via bun:"
+                tail -n 20 /tmp/qmd-bun-install.log | sed 's/^/[entrypoint] /'
+            fi
+        elif command -v npm >/dev/null 2>&1; then
+            if npm --prefix "${workspace_root}" install tsx@^4.21.0 --no-save --no-audit --no-fund >/tmp/qmd-npm-install.log 2>&1; then
+                echo "[entrypoint] qmd workspace dependencies installed via npm."
+            else
+                echo "[entrypoint] WARN: unable to install qmd workspace dependencies via npm:"
+                tail -n 20 /tmp/qmd-npm-install.log | sed 's/^/[entrypoint] /'
+            fi
+        fi
+    fi
+
+    if [ -d "${workspace_root}/node_modules/tsx" ]; then
+        export NODE_PATH="${workspace_root}/node_modules:${NODE_PATH:+:$NODE_PATH}"
+    fi
+}
+
 # Seed workspace memory files for first-run QMD-backed context.
 MEMORY_ROOT="/home/node/.openclaw/workspace"
+setup_qmd_workspace_deps
+
 if [ ! -f "${MEMORY_ROOT}/MEMORY.md" ]; then
   cat > "${MEMORY_ROOT}/MEMORY.md" << 'EOF'
 # MEMORY.md - Long-Term Workspace Memory
