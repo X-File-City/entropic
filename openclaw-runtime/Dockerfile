@@ -35,9 +35,11 @@ RUN echo "module.exports = { read: () => '', write: () => {}, readSync: () => ''
 # Switch to non-root user
 USER node
 
-# Install qmd (native backend used by OpenClaw memory.qmd)
+# Install qmd (native backend) and tsx in the image for deterministic startup.
 RUN curl -fsSL https://bun.sh/install | bash && \
-    bun install -g https://github.com/tobi/qmd
+    bun install -g https://github.com/tobi/qmd tsx
+
+ENV NODE_PATH="/home/node/.bun/install/global/node_modules${NODE_PATH:+:$NODE_PATH}"
 
 # Health check
 # /health can return 503 when control-ui assets are intentionally omitted.

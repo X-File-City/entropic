@@ -4,48 +4,49 @@ set -e
 # Create auth-profiles.json from environment variables
 # Keys stay in memory (tmpfs), never written to host disk
 
+json_escape() {
+    node -e 'const v = process.argv[1] ?? ""; process.stdout.write(JSON.stringify(v).slice(1,-1));' "$1"
+}
+
+append_auth_profile() {
+    key="$1"
+    provider="$2"
+    value="$3"
+
+    if [ -n "${AUTH_PROFILES}" ]; then
+        AUTH_PROFILES="${AUTH_PROFILES},"
+    fi
+    AUTH_PROFILES="${AUTH_PROFILES}
+    \"${key}\": { \"type\": \"api_key\", \"provider\": \"${provider}\", \"key\": \"${value}\" }"
+}
+
+AUTH_PROFILES=""
+
 AUTH_DIR="/home/node/.openclaw/agents/main/agent"
 mkdir -p "$AUTH_DIR"
 
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+    append_auth_profile "anthropic:default" "anthropic" "$(json_escape "${ANTHROPIC_API_KEY}")"
+fi
+if [ -n "$OPENROUTER_API_KEY" ]; then
+    append_auth_profile "openrouter:default" "openrouter" "$(json_escape "${OPENROUTER_API_KEY}")"
+fi
+if [ -n "$OPENAI_API_KEY" ]; then
+    append_auth_profile "openai:default" "openai" "$(json_escape "${OPENAI_API_KEY}")"
+fi
+if [ -n "$GEMINI_API_KEY" ]; then
+    append_auth_profile "google:default" "google" "$(json_escape "${GEMINI_API_KEY}")"
+fi
+
+cat > "$AUTH_DIR/auth-profiles.json" << EOF
 {
-    echo "{"
-    echo "  \"version\": 1,"
-    echo "  \"profiles\": {"
-
-    FIRST=true
-
-    if [ -n "$ANTHROPIC_API_KEY" ]; then
-        echo "    \"anthropic:default\": { \"type\": \"api_key\", \"provider\": \"anthropic\", \"key\": \"${ANTHROPIC_API_KEY}\" }"
-        FIRST=false
-    fi
-
-    if [ -n "$OPENROUTER_API_KEY" ]; then
-        if [ "$FIRST" = false ]; then echo ","; fi
-        echo "    \"openrouter:default\": { \"type\": \"api_key\", \"provider\": \"openrouter\", \"key\": \"${OPENROUTER_API_KEY}\" }"
-        FIRST=false
-    fi
-
-    if [ -n "$OPENAI_API_KEY" ]; then
-        if [ "$FIRST" = false ]; then echo ","; fi
-        echo "    \"openai:default\": { \"type\": \"api_key\", \"provider\": \"openai\", \"key\": \"${OPENAI_API_KEY}\" }"
-        FIRST=false
-    fi
-
-    if [ -n "$GEMINI_API_KEY" ]; then
-        if [ "$FIRST" = false ]; then echo ","; fi
-        echo "    \"google:default\": { \"type\": \"api_key\", \"provider\": \"google\", \"key\": \"${GEMINI_API_KEY}\" }"
-    fi
-
-    echo "  }"
-    echo "}"
-} > "$AUTH_DIR/auth-profiles.json"
-
-json_escape() {
-    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' -e 's/\n/\\n/g'
+  "version": 1,
+  "profiles": {${AUTH_PROFILES}
+  }
 }
+EOF
 
 # Create other directories OpenClaw needs
-mkdir -p /home/node/.openclaw/workspace
 mkdir -p /home/node/.openclaw/canvas
 mkdir -p /home/node/.openclaw/cron
 mkdir -p /home/node/.openclaw/logs
@@ -53,77 +54,9 @@ mkdir -p /home/node/.openclaw/.cache/qmd
 mkdir -p /data/qmd-models
 ln -sfn /data/qmd-models /home/node/.openclaw/.cache/qmd/models
 
-setup_qmd_workspace_deps() {
-    local workspace_root="/home/node/.openclaw/workspace"
-    local package_file="${workspace_root}/package.json"
-
-    mkdir -p "${workspace_root}/node_modules"
-
-    if [ ! -f "$package_file" ]; then
-        cat > "$package_file" << 'EOF'
-{
-  "name": "nova-openclaw-workspace",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "tsx": "^4.21.0"
-  }
-}
-EOF
-    fi
-
-    if [ ! -d "${workspace_root}/node_modules/tsx" ]; then
-        if command -v bun >/dev/null 2>&1; then
-            if /home/node/.bun/bin/bun install --cwd "${workspace_root}" >/tmp/qmd-bun-install.log 2>&1; then
-                echo "[entrypoint] qmd workspace dependencies installed via bun."
-            else
-                echo "[entrypoint] WARN: unable to install qmd workspace dependencies via bun:"
-                tail -n 20 /tmp/qmd-bun-install.log | sed 's/^/[entrypoint] /'
-            fi
-        elif command -v npm >/dev/null 2>&1; then
-            if npm --prefix "${workspace_root}" install tsx@^4.21.0 --no-save --no-audit --no-fund >/tmp/qmd-npm-install.log 2>&1; then
-                echo "[entrypoint] qmd workspace dependencies installed via npm."
-            else
-                echo "[entrypoint] WARN: unable to install qmd workspace dependencies via npm:"
-                tail -n 20 /tmp/qmd-npm-install.log | sed 's/^/[entrypoint] /'
-            fi
-        fi
-    fi
-
-    if [ -d "${workspace_root}/node_modules/tsx" ]; then
-        export NODE_PATH="${workspace_root}/node_modules:${NODE_PATH:+:$NODE_PATH}"
-    fi
-}
-
-# Seed workspace memory files for first-run QMD-backed context.
-MEMORY_ROOT="/home/node/.openclaw/workspace"
-setup_qmd_workspace_deps
-
-if [ ! -f "${MEMORY_ROOT}/MEMORY.md" ]; then
-  cat > "${MEMORY_ROOT}/MEMORY.md" << 'EOF'
-# MEMORY.md - Long-Term Workspace Memory
-
-This file is the high-signal memory for this workspace.
-Use it for durable decisions and preferences that should be kept across sessions.
-
-## Principles
-
-- Keep this file curated and concise.
-- Prefer short, durable notes over transient logs.
-- Move recurring context into this file as it becomes stable.
-EOF
-fi
-
-mkdir -p "${MEMORY_ROOT}/memory"
-TODAY_MEM=$(date +%Y-%m-%d)
-DAILY_MEM="${MEMORY_ROOT}/memory/${TODAY_MEM}.md"
-if [ ! -f "${DAILY_MEM}" ]; then
-  cat > "${DAILY_MEM}" << EOF
-# ${TODAY_MEM}
-
-- [ ] Add raw notes from this session here while they are still fresh.
-EOF
-fi
+# Seed workspace directory expected by qmd plugins.
+mkdir -p /home/node/.openclaw/workspace
+ln -sfn /home/node/.bun/install/global/node_modules /home/node/.openclaw/workspace/node_modules
 
 # qmd wrapper:
 # - Forces writable HOME/XDG paths in hardened container mode.
@@ -137,6 +70,7 @@ QMD_BIN="/home/node/.bun/bin/qmd"
 export HOME=/home/node/.openclaw
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-/home/node/.openclaw/agents/main/qmd/xdg-config}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/home/node/.openclaw/agents/main/qmd/xdg-cache}"
+export NODE_PATH="/home/node/.bun/install/global/node_modules${NODE_PATH:+:$NODE_PATH}"
 
 if [ "${QMD_LIGHT_MODE:-1}" = "1" ] && [ "${1:-}" = "query" ]; then
     MODELS_DIR="/data/qmd-models"

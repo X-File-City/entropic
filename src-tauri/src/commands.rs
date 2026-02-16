@@ -13,6 +13,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3240,6 +3242,61 @@ fn docker_args_for_log(args: &[String]) -> String {
     redacted.join(" ")
 }
 
+struct GatewayEnvFile {
+    path: PathBuf,
+}
+
+impl Drop for GatewayEnvFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn gateway_env_file(entries: &[(&str, &str)]) -> Result<GatewayEnvFile, String> {
+    let mut lines = String::new();
+    for &(key, value) in entries {
+        if value.is_empty() {
+            continue;
+        }
+
+        if key.contains('\n') || key.contains('\r') || key.is_empty() || key.contains('=') {
+            return Err(format!("Invalid gateway env key: {}", key));
+        }
+        if value.contains('\n') || value.contains('\r') || value.contains('\0') {
+            return Err(format!("Invalid gateway env value for key: {}", key));
+        }
+
+        lines.push_str(key);
+        lines.push('=');
+        lines.push_str(value);
+        lines.push('\n');
+    }
+
+    if lines.is_empty() {
+        return Err("Missing gateway environment values".to_string());
+    }
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let file_name = format!("nova-openclaw-env-{}-{}.env", std::process::id(), nanos);
+    let path = std::env::temp_dir().join(file_name);
+    fs::write(&path, lines).map_err(|e| format!("Failed to create gateway env file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&path)
+            .map_err(|e| format!("Failed to read gateway env file metadata: {}", e))?
+            .permissions();
+        perms.set_mode(0o600);
+        fs::set_permissions(&path, perms)
+            .map_err(|e| format!("Failed to secure gateway env file: {}", e))?;
+    }
+
+    Ok(GatewayEnvFile { path })
+}
+
 async fn wait_for_gateway_health_strict(token: &str, attempts: usize) -> Result<(), String> {
     let ws_url = gateway_ws_url();
     let mut last_error = String::new();
@@ -3522,6 +3579,41 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
 
     // Build docker run command - pass API keys as env vars
     // The entrypoint.sh script creates auth-profiles.json from these
+    let mut env_entries: Vec<(&str, &str)> = vec![
+        (
+            "OPENCLAW_GATEWAY_TOKEN",
+            gateway_token.as_str(),
+        ),
+        (
+            "NOVA_GATEWAY_SCHEMA_VERSION",
+            NOVA_GATEWAY_SCHEMA_VERSION,
+        ),
+        ("OPENCLAW_MODEL", model),
+        ("OPENCLAW_MEMORY_SLOT", memory_slot),
+    ];
+
+    if let Some(key) = api_keys.get("anthropic") {
+        env_entries.push(("ANTHROPIC_API_KEY", key.as_str()));
+    }
+    if let Some(key) = api_keys.get("openai") {
+        env_entries.push(("OPENAI_API_KEY", key.as_str()));
+    }
+    if let Some(key) = api_keys.get("google") {
+        env_entries.push(("GEMINI_API_KEY", key.as_str()));
+    }
+    let mut web_base_url = None;
+    if let Ok(base) = std::env::var("NOVA_WEB_BASE_URL") {
+        if !base.trim().is_empty() {
+            web_base_url = Some(base);
+        }
+    }
+    if let Some(base) = web_base_url.as_deref() {
+        env_entries.push(("NOVA_WEB_BASE_URL", base));
+    }
+
+    let env_file = gateway_env_file(&env_entries)?;
+    let env_file_path = env_file.path.to_string_lossy().to_string();
+
     let mut docker_args = vec![
         "run".to_string(),
         "-d".to_string(),
@@ -3541,39 +3633,9 @@ pub async fn start_gateway(app: AppHandle, state: State<'_, AppState>) -> Result
         "/run:rw,noexec,nosuid,nodev,size=10m".to_string(),
         "--tmpfs".to_string(),
         "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
-        "-e".to_string(),
-        format!("OPENCLAW_GATEWAY_TOKEN={}", gateway_token),
-        "-e".to_string(),
-        format!(
-            "NOVA_GATEWAY_SCHEMA_VERSION={}",
-            NOVA_GATEWAY_SCHEMA_VERSION
-        ),
-        "-e".to_string(),
-        format!("OPENCLAW_MODEL={}", model),
-        "-e".to_string(),
-        format!("OPENCLAW_MEMORY_SLOT={}", memory_slot),
+        "--env-file".to_string(),
+        env_file_path,
     ];
-
-    // Add API keys as environment variables (entrypoint creates auth-profiles.json from these)
-    if let Some(key) = api_keys.get("anthropic") {
-        docker_args.push("-e".to_string());
-        docker_args.push(format!("ANTHROPIC_API_KEY={}", key));
-    }
-    if let Some(key) = api_keys.get("openai") {
-        docker_args.push("-e".to_string());
-        docker_args.push(format!("OPENAI_API_KEY={}", key));
-    }
-    if let Some(key) = api_keys.get("google") {
-        docker_args.push("-e".to_string());
-        docker_args.push(format!("GEMINI_API_KEY={}", key));
-    }
-
-    if let Ok(base) = std::env::var("NOVA_WEB_BASE_URL") {
-        if !base.trim().is_empty() {
-            docker_args.push("-e".to_string());
-            docker_args.push(format!("NOVA_WEB_BASE_URL={}", base.trim()));
-        }
-    }
 
     append_nova_skills_mount(&mut docker_args);
 
@@ -3802,6 +3864,30 @@ pub async fn start_gateway_with_proxy(
     ensure_runtime_image()?;
 
     // Build docker run command with proxy configuration
+    let mut env_entries: Vec<(&str, &str)> = vec![
+        (
+            "OPENCLAW_GATEWAY_TOKEN",
+            local_gateway_token.as_str(),
+        ),
+        (
+            "NOVA_GATEWAY_SCHEMA_VERSION",
+            NOVA_GATEWAY_SCHEMA_VERSION,
+        ),
+        ("OPENCLAW_MODEL", model.as_str()),
+        ("OPENCLAW_MEMORY_SLOT", "memory-core"),
+        ("NOVA_PROXY_MODE", "1"),
+        ("OPENROUTER_API_KEY", gateway_token.as_str()),
+        ("NOVA_PROXY_BASE_URL", docker_proxy_api_url.as_str()),
+        ("NOVA_WEB_BASE_URL", resolved_proxy_url.as_str()),
+    ];
+    if let Some(image_model) = image_model.as_deref() {
+        if !image_model.trim().is_empty() {
+            env_entries.push(("OPENCLAW_IMAGE_MODEL", image_model));
+        }
+    }
+    let env_file = gateway_env_file(&env_entries)?;
+    let env_file_path = env_file.path.to_string_lossy().to_string();
+
     let mut docker_args = vec![
         "run".to_string(),
         "-d".to_string(),
@@ -3821,36 +3907,9 @@ pub async fn start_gateway_with_proxy(
         "/run:rw,noexec,nosuid,nodev,size=10m".to_string(),
         "--tmpfs".to_string(),
         "/home/node/.openclaw:rw,noexec,nosuid,nodev,size=50m,uid=1000,gid=1000".to_string(),
-        "-e".to_string(),
-        format!("OPENCLAW_GATEWAY_TOKEN={}", local_gateway_token),
-        "-e".to_string(),
-        format!(
-            "NOVA_GATEWAY_SCHEMA_VERSION={}",
-            NOVA_GATEWAY_SCHEMA_VERSION
-        ),
-        "-e".to_string(),
-        format!("OPENCLAW_MODEL={}", model),
-        "-e".to_string(),
-        "OPENCLAW_MEMORY_SLOT=memory-core".to_string(),
-        "-e".to_string(),
-        "NOVA_PROXY_MODE=1".to_string(),
-        // Nova proxy configuration - OpenClaw will use this as its AI backend (OpenRouter provider)
-        "-e".to_string(),
-        format!("OPENROUTER_API_KEY={}", gateway_token),
-        "-e".to_string(),
-        format!("NOVA_PROXY_BASE_URL={}", docker_proxy_api_url),
+        "--env-file".to_string(),
+        env_file_path,
     ];
-
-    if let Some(image_model) = image_model {
-        if !image_model.trim().is_empty() {
-            docker_args.push("-e".to_string());
-            docker_args.push(format!("OPENCLAW_IMAGE_MODEL={}", image_model));
-        }
-    }
-
-    // Nova web base URL for plugin tools (billing + proxy endpoints)
-    docker_args.push("-e".to_string());
-    docker_args.push(format!("NOVA_WEB_BASE_URL={}", resolved_proxy_url));
 
     append_nova_skills_mount(&mut docker_args);
 
