@@ -22,6 +22,12 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 
 const NOVA_PROXY_DEV_ORIGIN: &str = "http://host.docker.internal:5174";
+const NOVA_PROXY_ALLOWED_HOSTS: &[&str] = &[
+    "nova.qu.ai",
+    "host.docker.internal",
+    "localhost",
+    "127.0.0.1",
+];
 
 /// Get the Docker socket path for the current platform.
 /// On macOS, uses Colima socket. On Linux/Windows, uses default.
@@ -80,43 +86,55 @@ fn docker_binary_usable(candidate: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_container_proxy_base(proxy_url: &str) -> String {
+fn resolve_container_proxy_base(proxy_url: &str) -> Result<String, String> {
     let trimmed = proxy_url.trim();
     if trimmed.is_empty() {
-        return NOVA_PROXY_DEV_ORIGIN.to_string();
+        return Ok(NOVA_PROXY_DEV_ORIGIN.to_string());
     }
 
     if trimmed.starts_with('/') {
         let path = trimmed.trim_start_matches('/');
-        return if path.is_empty() {
+        return Ok(if path.is_empty() {
             NOVA_PROXY_DEV_ORIGIN.trim_end_matches('/').to_string()
         } else {
             format!("{}/{}", NOVA_PROXY_DEV_ORIGIN.trim_end_matches('/'), path)
-        };
+        });
     }
 
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        if let Ok(mut url) = Url::parse(trimmed) {
-            match url.host_str() {
-                Some("localhost") | Some("127.0.0.1") => {
-                    let had_port = url.port().is_some();
-                    if let Some(host) = Url::parse("http://host.docker.internal:5174")
-                        .ok()
-                        .and_then(|proxy_host| proxy_host.host_str().map(ToString::to_string))
-                    {
-                        let _ = url.set_host(Some(&host));
-                    }
-                    if !had_port {
-                        let _ = url.set_port(Some(5174));
-                    }
-                }
-                _ => {}
-            }
-            return url.to_string().trim_end_matches('/').to_string();
+    let mut url = Url::parse(trimmed)
+        .map_err(|_| "Invalid proxy URL. Enter /path or a valid http/https URL.".to_string())?;
+
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(format!(
+            "Invalid proxy URL scheme '{}'. Only http/https are supported.",
+            url.scheme()
+        ));
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| "Invalid proxy URL: missing host.".to_string())?;
+    if !NOVA_PROXY_ALLOWED_HOSTS.contains(&host) {
+        return Err(format!(
+            "Proxy host '{}' is not allowed. Configure NOVA_PROXY_BASE_URL with an allowed host.",
+            host
+        ));
+    }
+
+    if matches!(host, "localhost" | "127.0.0.1") {
+        let had_port = url.port().is_some();
+        if let Some(host) = Url::parse("http://host.docker.internal:5174")
+            .ok()
+            .and_then(|proxy_host| proxy_host.host_str().map(ToString::to_string))
+        {
+            let _ = url.set_host(Some(&host));
+        }
+        if !had_port {
+            let _ = url.set_port(Some(5174));
         }
     }
 
-    trimmed.to_string()
+    Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
 fn resolve_container_openai_base(proxy_base: &str) -> String {
@@ -3077,7 +3095,7 @@ pub async fn start_gateway_with_proxy(
     } else {
         "127.0.0.1:19789:18789"
     };
-    let resolved_proxy_url = resolve_container_proxy_base(&proxy_url);
+    let resolved_proxy_url = resolve_container_proxy_base(&proxy_url)?;
     let docker_proxy_api_url = resolve_container_openai_base(&resolved_proxy_url);
     // Ensure runtime (Colima) is running on macOS
     let runtime = get_runtime(&app);
