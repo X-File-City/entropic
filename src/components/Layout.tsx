@@ -44,6 +44,7 @@ type Props = {
   onNavigate: (page: Page) => void;
   children: ReactNode;
   gatewayRunning: boolean;
+  experimentalDesktop?: boolean;
   integrationsSyncing?: boolean;
   chatSessions?: ChatSession[];
   currentChatSession?: string | null;
@@ -57,9 +58,9 @@ type Props = {
   ) => void;
 };
 
-const navItems: { id: Page; label: string; icon: typeof MessageSquare }[] = [
-  { id: "files", label: "Home", icon: FolderOpen },
+const baseNavItems: { id: Page; label: string; icon: typeof MessageSquare }[] = [
   { id: "chat", label: "New Chat", icon: Plus },
+  { id: "files", label: "Desktop", icon: FolderOpen },
   { id: "channels", label: "Messaging", icon: Radio },
   { id: "store", label: "Plugins", icon: Puzzle },
   { id: "skills", label: "Skills", icon: Sparkles },
@@ -88,6 +89,7 @@ export function Layout({
   onNavigate,
   children,
   gatewayRunning,
+  experimentalDesktop = false,
   integrationsSyncing,
   chatSessions,
   currentChatSession,
@@ -175,6 +177,9 @@ export function Layout({
     ? sortedChatSessions
     : sortedChatSessions.slice(0, 5);
   const hasMoreChatSessions = sortedChatSessions.length > 5;
+  const navItems = baseNavItems.filter((item) =>
+    item.id === "files" ? experimentalDesktop : true
+  );
 
   async function windowAction(action: "close" | "minimize" | "expand") {
     try {

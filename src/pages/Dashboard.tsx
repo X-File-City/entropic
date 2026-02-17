@@ -44,7 +44,7 @@ const GATEWAY_FAILURE_THRESHOLD = 3;
 export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const { isAuthenticated, isAuthConfigured } = useAuth();
   const [useLocalKeys, setUseLocalKeys] = useState(false);
-  const [currentPage, setCurrentPage] = useState<Page>("files");
+  const [currentPage, setCurrentPage] = useState<Page>("chat");
   const [gatewayRunning, setGatewayRunning] = useState(false);
   const [isTogglingGateway, setIsTogglingGateway] = useState(false);
   const [showGatewayStartup, setShowGatewayStartup] = useState(false);
@@ -60,6 +60,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const [selectedModel, setSelectedModel] = useState(DEFAULT_PROXY_MODEL);
   const [codeModel, setCodeModel] = useState("openai/gpt-5.2-codex");
   const [imageModel, setImageModel] = useState("google/gemini-3-pro-image-preview");
+  const [experimentalDesktop, setExperimentalDesktop] = useState(false);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [currentChatSession, setCurrentChatSession] = useState<string | null>(null);
   const [pendingChatSession, setPendingChatSession] = useState<string | null>(null);
@@ -106,6 +107,10 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
         if (savedCode) setCodeModel(savedCode);
         const savedImage = await store.get("imageModel") as string | null;
         if (savedImage) setImageModel(savedImage);
+        const savedExperimentalDesktop = await store.get("experimentalDesktop") as boolean | null;
+        if (typeof savedExperimentalDesktop === "boolean") {
+          setExperimentalDesktop(savedExperimentalDesktop);
+        }
       } catch (error) {
         console.error("[Nova] Failed to load model preference:", error);
       } finally {
@@ -122,6 +127,12 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     const interval = window.setInterval(checkGateway, intervalMs);
     return () => window.clearInterval(interval);
   }, [gatewayRunning, showGatewayStartup, isTogglingGateway]);
+
+  useEffect(() => {
+    if (!experimentalDesktop && currentPage === "files") {
+      setCurrentPage("chat");
+    }
+  }, [experimentalDesktop, currentPage]);
 
   useEffect(() => {
     if (!gatewayRunning) {
@@ -279,6 +290,17 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       await store.save();
     } catch (error) {
       console.error("[Nova] Failed to save useLocalKeys:", error);
+    }
+  }
+
+  async function persistExperimentalDesktop(value: boolean) {
+    setExperimentalDesktop(value);
+    try {
+      const store = await TauriStore.load("nova-settings.json");
+      await store.set("experimentalDesktop", value);
+      await store.save();
+    } catch (error) {
+      console.error("[Nova] Failed to save experimentalDesktop:", error);
     }
   }
 
@@ -847,6 +869,8 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             integrationsMissing={integrationsMissing}
             onGatewayToggle={toggleGateway}
             isTogglingGateway={isTogglingGateway}
+            experimentalDesktop={experimentalDesktop}
+            onExperimentalDesktopChange={persistExperimentalDesktop}
             selectedModel={selectedModel}
             onModelChange={setSelectedModel}
             useLocalKeys={useLocalKeys}
@@ -869,6 +893,8 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             gatewayRunning={gatewayRunning}
             onGatewayToggle={toggleGateway}
             isTogglingGateway={isTogglingGateway}
+            experimentalDesktop={experimentalDesktop}
+            onExperimentalDesktopChange={persistExperimentalDesktop}
             selectedModel={selectedModel}
             onModelChange={handleModelChange}
             useLocalKeys={useLocalKeys}
@@ -953,6 +979,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       currentPage={currentPage}
       onNavigate={setCurrentPage}
       gatewayRunning={gatewayRunning}
+      experimentalDesktop={experimentalDesktop}
       integrationsSyncing={integrationsSyncing}
       chatSessions={chatSessions}
       currentChatSession={currentChatSession}

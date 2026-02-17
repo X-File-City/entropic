@@ -13,6 +13,8 @@ type Props = {
   gatewayRunning: boolean;
   onGatewayToggle: () => void;
   isTogglingGateway: boolean;
+  experimentalDesktop: boolean;
+  onExperimentalDesktopChange: (value: boolean) => void;
   selectedModel: string;
   onModelChange: (model: string) => void;
   useLocalKeys: boolean;
@@ -81,6 +83,8 @@ export function Settings({
   gatewayRunning,
   onGatewayToggle,
   isTogglingGateway,
+  experimentalDesktop,
+  onExperimentalDesktopChange,
   selectedModel,
   onModelChange,
   useLocalKeys,
@@ -390,6 +394,27 @@ export function Settings({
             </div>
             <ChevronRight className="w-4 h-4 text-[var(--text-tertiary)]" />
           </div>
+        </SettingsRow>
+        <SettingsRow
+          label="Enable experimental desktop"
+          icon={Sparkles}
+          description='Show "Desktop" in navigation'
+        >
+          <button
+            onClick={() => onExperimentalDesktopChange(!experimentalDesktop)}
+            className={clsx(
+              "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+              experimentalDesktop ? "bg-[var(--system-blue)]" : "bg-[var(--system-gray-4)]"
+            )}
+            aria-label="Enable experimental desktop"
+          >
+            <span
+              className={clsx(
+                "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                experimentalDesktop ? "translate-x-5" : "translate-x-0"
+              )}
+            />
+          </button>
         </SettingsRow>
       </SettingsGroup>
 
