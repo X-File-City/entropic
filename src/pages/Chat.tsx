@@ -264,6 +264,36 @@ function sanitizeAuthStoreDetails(raw: string): string {
     .replace(/\(agentDir:\s*[^)]+\)/g, "(agentDir: [hidden])");
 }
 
+const BILLING_RECOVERY_MESSAGE = "You're out of credits. Add credits to continue using Nova in proxy mode.";
+
+function isBillingIssueMessage(raw?: string | null): boolean {
+  if (!raw) return false;
+  const message = raw.toLowerCase();
+  return (
+    message.includes("insufficient credits") ||
+    message.includes("out of credits") ||
+    message.includes("add more credits") ||
+    message.includes("payment required") ||
+    message.includes("billing issue") ||
+    message.includes("http 402") ||
+    /\b402\b/.test(message)
+  );
+}
+
+function formatAssistantErrorTextForUi(raw?: string | null): string {
+  const message = sanitizeGatewayErrorMessage(raw || "");
+  if (isBillingIssueMessage(message)) {
+    return `${BILLING_RECOVERY_MESSAGE} Open Billing to add funds.`;
+  }
+  if (/^connection error\.?$/i.test(message)) {
+    return "The AI provider connection failed. Check your network, auth, and billing setup, then retry.";
+  }
+  if (/failed to authenticate request with clerk/i.test(message)) {
+    return "Nova backend authentication failed. Sign out and sign back in, then retry.";
+  }
+  return message;
+}
+
 function sanitizeGatewayErrorMessage(raw?: string | null): string {
   const message = (raw || "").trim();
   if (!message) return "Chat error";
@@ -275,6 +305,14 @@ function sanitizeGatewayErrorMessage(raw?: string | null): string {
   }
 
   return sanitizeAuthStoreDetails(message);
+}
+
+function extractAssistantErrorFromGatewayMessage(message: GatewayMessage): string | null {
+  const stopReason = typeof message?.stopReason === "string" ? message.stopReason.toLowerCase() : "";
+  const errorMessage =
+    typeof message?.errorMessage === "string" ? message.errorMessage.trim() : "";
+  if (stopReason !== "error" && !errorMessage) return null;
+  return formatAssistantErrorTextForUi(errorMessage || "LLM request failed with an unknown error.");
 }
 
 function parseToolPayloads(raw: string): {
@@ -683,16 +721,26 @@ function normalizeGatewayMessage(message: GatewayMessage, id: string): Message |
     return { id, role: "user", content: normalized.content, sentAt: normalized.sentAt };
   }
   if (roleRaw === "assistant") {
-    if (!hasText && !hasNonText) return null;
-    if (!hasText) return null;
+    const assistantError = extractAssistantErrorFromGatewayMessage(message);
+    if (!hasText && !hasNonText && !assistantError) return null;
+    if (!hasText) {
+      if (!assistantError) return null;
+      return {
+        id,
+        role: "assistant",
+        content: assistantError,
+        sentAt: messageTimestamp ?? Date.now(),
+      };
+    }
     const prepared = buildAssistantPayload(text);
-    if (!prepared.content && prepared.assistantPayload.events.length === 0 && prepared.assistantPayload.errors.length === 0) {
+    const resolvedContent = prepared.content || assistantError || "";
+    if (!resolvedContent && prepared.assistantPayload.events.length === 0 && prepared.assistantPayload.errors.length === 0) {
       return null;
     }
     return {
       id,
       role: "assistant",
-      content: prepared.content,
+      content: resolvedContent,
       assistantPayload: prepared.assistantPayload,
       sentAt: messageTimestamp,
     };
@@ -886,6 +934,7 @@ export function Chat({
   const activeRunSessionRef = useRef<string | null>(null);
   const activeRunTimeoutRef = useRef<number | null>(null);
   const runSessionKeyRef = useRef<Record<string, string>>({});
+  const runHistoryRecoveryRef = useRef<Record<string, boolean>>({});
   const gatewaySessionKeysRef = useRef<Set<string>>(new Set());
   const visibleMessagesSessionRef = useRef<string | null>(null);
 
@@ -1452,6 +1501,93 @@ export function Chat({
     }
   }
 
+  async function recoverFinalRunFromHistory(runId: string, sessionKey: string) {
+    if (!runId || !sessionKey) return;
+    if (runHistoryRecoveryRef.current[runId]) return;
+    const client = clientRef.current;
+    if (!client || !client.isConnected()) return;
+
+    runHistoryRecoveryRef.current[runId] = true;
+    try {
+      const history = await client.getChatHistory(sessionKey, 40);
+      const fallback = [...history].reverse().find((item) => {
+        const role = typeof item?.role === "string" ? item.role.toLowerCase() : "";
+        if (role !== "assistant" && role !== "toolresult" && role !== "tool_result" && role !== "tool") {
+          return false;
+        }
+        const normalized = normalizeGatewayMessage(item as GatewayMessage, runId);
+        const text = normalized?.content ?? "";
+        const hasPayload = Boolean(
+          normalized?.assistantPayload &&
+          (normalized.assistantPayload.events.length > 0 || normalized.assistantPayload.errors.length > 0)
+        );
+        return Boolean(text || hasPayload);
+      });
+
+      if (!fallback) {
+        setError("Assistant returned no visible response. Check Billing/auth/network and retry.");
+        addDiag(`final recovery missed runId=${runId} (no assistant payload in history)`);
+        return;
+      }
+
+      const normalized = normalizeGatewayMessage(fallback as GatewayMessage, runId);
+      if (!normalized) {
+        setError("Assistant returned no visible response. Check Billing/auth/network and retry.");
+        addDiag(`final recovery missed runId=${runId} (normalize failed)`);
+        return;
+      }
+
+      const text = normalized.content ?? "";
+      const hasRenderableAssistantPayload = Boolean(
+        normalized.assistantPayload &&
+        (normalized.assistantPayload.events.length > 0 || normalized.assistantPayload.errors.length > 0)
+      );
+      if (!text && !hasRenderableAssistantPayload) {
+        setError("Assistant returned no visible response. Check Billing/auth/network and retry.");
+        addDiag(`final recovery missed runId=${runId} (empty normalized payload)`);
+        return;
+      }
+
+      setMessages((prev) => {
+        const existingIdx = prev.findIndex((m) => m.id === runId && m.role === "assistant");
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            content: text,
+            kind: normalized.kind ?? updated[existingIdx].kind,
+            toolName: normalized.toolName ?? updated[existingIdx].toolName,
+            assistantPayload: normalized.assistantPayload ?? updated[existingIdx].assistantPayload,
+            sentAt: updated[existingIdx].sentAt ?? normalized.sentAt ?? Date.now(),
+          };
+          return updated;
+        }
+        return [
+          ...prev,
+          {
+            id: runId,
+            role: "assistant",
+            content: text,
+            kind: normalized.kind,
+            toolName: normalized.toolName,
+            assistantPayload: normalized.assistantPayload,
+            sentAt: normalized.sentAt ?? Date.now(),
+          },
+        ];
+      });
+      setThinkingStatus(null);
+      if (isBillingIssueMessage(text)) {
+        setError(BILLING_RECOVERY_MESSAGE);
+      }
+      addDiag(`recovered final response from history runId=${runId}`);
+    } catch (err) {
+      setError("Assistant returned no visible response. Check Billing/auth/network and retry.");
+      addDiag(`final recovery failed runId=${runId}: ${String(err)}`);
+    } finally {
+      delete runHistoryRecoveryRef.current[runId];
+    }
+  }
+
   function handleChatEvent(event: any) {
     const composer = textareaRef.current;
     const keepComposerFocus = !!composer && document.activeElement === composer;
@@ -1570,6 +1706,9 @@ export function Chat({
             addDiag(`timing tool_result runId=${eventRunId} t=${timings.toolSeenAt - timings.startedAt}ms`);
           }
         }
+      } else if (event.state === "final" && eventRunId && knownSessionKey) {
+        addDiag(`final event missing payload runId=${eventRunId}; attempting history recovery`);
+        void recoverFinalRunFromHistory(eventRunId, knownSessionKey);
       }
       if (event.state === "final") {
         setIsLoading(false);
@@ -1614,7 +1753,7 @@ export function Chat({
         }
       }
     } else if (event.state === "error") {
-      const errorMessage = sanitizeGatewayErrorMessage(event.errorMessage || "Chat error");
+      const errorMessage = formatAssistantErrorTextForUi(event.errorMessage || "Chat error");
       setError(errorMessage);
       setIsLoading(false);
       if (eventRunId && activeRunIdRef.current === eventRunId) {
@@ -2412,6 +2551,7 @@ export function Chat({
   if (!connectedProvider && !proxyEnabled) return renderNoProvider();
   const autoStartExpected = proxyEnabled && !gatewayRunning;
   const activeDraft = currentSession ? (draftsBySession[currentSession] || "") : "";
+  const showBillingAction = Boolean(error && isBillingIssueMessage(error));
 
   // Main Chat UI
   return (
@@ -2496,7 +2636,19 @@ export function Chat({
 
       {/* Error Banner */}
       {!gatewayStarting && error && (
-        <div className="p-2 text-center text-sm bg-red-500/10 text-red-500">{error}</div>
+        <div className="p-2 text-center text-sm bg-red-500/10 text-red-500">
+          <div className="flex items-center justify-center gap-3 flex-wrap">
+            <span>{error}</span>
+            {showBillingAction && onNavigate && (
+              <button
+                onClick={() => onNavigate("billing")}
+                className="btn-primary !py-1 !px-3 text-xs"
+              >
+                Add Credits
+              </button>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Messages or Welcome */}
