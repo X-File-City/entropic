@@ -371,6 +371,34 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       if (startGatewayAttemptRef.current !== attemptId) {
         return false;
       }
+
+      // The Rust side may return Ok while the container is still in the
+      // "starting" Docker health state (WS not accepting connections yet).
+      // Poll until the WS endpoint is actually ready before declaring success.
+      {
+        const HEALTH_POLL_MS = 2000;
+        const HEALTH_TIMEOUT_MS = 90_000;
+        const healthStart = Date.now();
+        let wsReady = false;
+        while (Date.now() - healthStart < HEALTH_TIMEOUT_MS) {
+          if (startGatewayAttemptRef.current !== attemptId) {
+            return false;
+          }
+          const ok = await getGatewayStatusCached({ force: true });
+          if (ok) {
+            wsReady = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
+        }
+        if (!wsReady) {
+          throw new Error(
+            "Gateway started but did not become healthy within 90 s. Please try again."
+          );
+        }
+      }
+
+      gatewayHealthFailureStreakRef.current = 0;
       setGatewayRunning(true);
       clearGatewayRetry();
       setStartupError(null);

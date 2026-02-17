@@ -1180,7 +1180,7 @@ fn clawhub_exec(args: &[&str]) -> Result<Output, String> {
         "npm_config_cache=/data/.npm",
         "npx",
         "-y",
-        "clawhub",
+        "clawhub@0.7.0",
     ]);
     cmd.args(args);
     cmd.output()
