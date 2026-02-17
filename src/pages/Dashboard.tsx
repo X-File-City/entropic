@@ -281,17 +281,6 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     return "Failed to start gateway";
   }
 
-  async function persistUseLocalKeys(value: boolean) {
-    setUseLocalKeys(value);
-    try {
-      const store = await TauriStore.load("nova-settings.json");
-      await store.set("useLocalKeys", value);
-      await store.save();
-    } catch (error) {
-      console.error("[Nova] Failed to save useLocalKeys:", error);
-    }
-  }
-
   async function persistExperimentalDesktop(value: boolean) {
     setExperimentalDesktop(value);
     try {
@@ -467,7 +456,6 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             "Can’t reach the Nova backend from the app (network/API error). Check backend availability and local proxy settings.",
           actions: [
             { label: "Retry", onClick: () => startGatewayProxyFlow({ model, image, stopFirst, allowRetry: false }) },
-            { label: "Use Local Keys", onClick: () => persistUseLocalKeys(true) },
           ],
         });
         setGatewayStartupStage("idle");
