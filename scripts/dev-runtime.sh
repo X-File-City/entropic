@@ -216,17 +216,35 @@ resolve_runtime_host() {
   return 1
 }
 
-ensure_colima() {
-  if [ -z "${COLIMA_BIN:-}" ]; then
-    echo "[dev] Colima binary not available. Using existing Docker context."
-    return 0
-  fi
+# Returns 0 if the daemon log for a profile contains a `signal: killed` marker.
+colima_has_crash_marker() {
+  local profile=$1
+  local home log
+  for home in "$COLIMA_HOME" "$DEFAULT_COLIMA_HOME" "$HOME/.nova/colima"; do
+    log="$home/$profile/daemon/daemon.log"
+    if [ -f "$log" ] && grep -q "signal: killed" "$log" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
 
-  # Ensure Colima/Lima home directories exist.  The clean-for-user-test
-  # script (and first-time runs) wipe COLIMA_HOME entirely; Lima crashes
-  # with "signal: killed" if its home dir is missing.
+# Delete all Colima + Lima state for a profile so it can start fresh.
+# NOTE: Lima stores its instance at $COLIMA_HOME/_lima/colima-<profile>
+#       (with the "colima-" prefix), NOT at $COLIMA_HOME/_lima/<profile>.
+reset_colima_profile() {
+  local profile=$1
+  echo "[dev] Resetting Colima + Lima state for profile $profile..."
+  run_colima --profile "$profile" stop --force 2>/dev/null || true
+  run_colima --profile "$profile" delete --force 2>/dev/null || true
+  # Remove the Lima instance directory (colima- prefix is required)
+  rm -rf "$COLIMA_HOME/_lima/colima-$profile" 2>/dev/null || true
+  # Also wipe the Colima profile directory itself so no stale sockets remain
+  rm -rf "$COLIMA_HOME/$profile" 2>/dev/null || true
   mkdir -p "$COLIMA_HOME/_lima"
+}
 
+_try_start_colima_profiles() {
   for i in "${!colima_profiles[@]}"; do
     local profile="${colima_profiles[$i]}"
     local vm_type="${colima_vm_types[$i]}"
@@ -236,6 +254,13 @@ ensure_colima() {
       ACTIVE_DOCKER_HOST="$(resolve_docker_host "$profile")"
       echo "[dev] Colima already running: $profile"
       return 0
+    fi
+
+    # Proactively reset if the daemon log shows the VM was OOM-killed.
+    if colima_has_crash_marker "$profile"; then
+      echo "[dev] Crash marker (signal: killed) detected for $profile; resetting before start."
+      reset_colima_profile "$profile"
+      sleep 1
     fi
 
     echo "[dev] Starting Colima profile $profile ($vm_type)..."
@@ -257,12 +282,9 @@ ensure_colima() {
 
       attempts=$((attempts - 1))
       if [ "$attempts" -gt 0 ] && echo "${start_output:-}" | grep -qi "lima\|signal.*killed\|compatibility"; then
-        # Lima state is corrupt or stale — reset and retry the same profile
-        # instead of falling through to qemu.
+        # Lima state is corrupt or stale — reset and retry the same profile.
         echo "[dev] Lima init error detected for $profile; resetting state and retrying..."
-        run_colima --profile "$profile" delete -f 2>/dev/null || true
-        rm -rf "$COLIMA_HOME/_lima/$profile" 2>/dev/null || true
-        mkdir -p "$COLIMA_HOME/_lima"
+        reset_colima_profile "$profile"
         sleep 1
       else
         echo "[dev] Colima failed to start profile $profile (vm: $vm_type)."
@@ -278,6 +300,39 @@ ensure_colima() {
       continue
     fi
   done
+
+  return 1
+}
+
+ensure_colima() {
+  if [ -z "${COLIMA_BIN:-}" ]; then
+    echo "[dev] Colima binary not available. Using existing Docker context."
+    return 0
+  fi
+
+  # Ensure Colima/Lima home directories exist.  The clean-for-user-test
+  # script (and first-time runs) wipe COLIMA_HOME entirely; Lima crashes
+  # with "signal: killed" if its home dir is missing.
+  mkdir -p "$COLIMA_HOME/_lima"
+
+  if _try_start_colima_profiles; then
+    return 0
+  fi
+
+  # All profiles failed on the first pass.  Do a one-time hard reset of
+  # all Lima/Colima state and retry — this heals corrupted disk images or
+  # leftover PID files from a previous OOM kill.
+  echo "[dev] All Colima profiles failed; performing a full clean reset and retrying..."
+  for i in "${!colima_profiles[@]}"; do
+    reset_colima_profile "${colima_profiles[$i]}"
+  done
+  rm -rf "$COLIMA_HOME/_lima" 2>/dev/null || true
+  mkdir -p "$COLIMA_HOME/_lima"
+  sleep 2
+
+  if _try_start_colima_profiles; then
+    return 0
+  fi
 
   echo "[dev] WARNING: Colima did not auto-start. Continuing with Docker context if available."
   return 0

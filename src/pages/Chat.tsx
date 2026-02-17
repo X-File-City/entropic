@@ -1327,6 +1327,21 @@ export function Chat({
     }
   }, [gatewayRunning, gatewayStarting, connectedProvider, proxyEnabled, connected]);
 
+  // Reconnect-polling: when the gateway is running but the WS socket isn't
+  // established yet (e.g. during the warm-up window after a container start),
+  // retry connectToGateway() every 3 s rather than waiting for a dep change.
+  useEffect(() => {
+    const shouldPoll =
+      gatewayRunning && !gatewayStarting && !connected && (connectedProvider || proxyEnabled);
+    if (!shouldPoll) return;
+    const id = window.setInterval(() => {
+      if (!connectInFlightRef.current && !clientRef.current?.isConnected()) {
+        void connectToGateway();
+      }
+    }, 3000);
+    return () => window.clearInterval(id);
+  }, [gatewayRunning, gatewayStarting, connected, connectedProvider, proxyEnabled]);
+
   useEffect(() => {
     return () => {
       if (clientRef.current) {
@@ -1425,7 +1440,9 @@ export function Chat({
       const onError = (err: string) => {
         const normalizedError = sanitizeGatewayErrorMessage(err);
         const suppressError = gatewayStarting || isConnecting || !gatewayRunning;
-        setConnected(false);
+        if (!client.isConnected()) {
+          setConnected(false);
+        }
         if (!suppressError) {
           setError(normalizedError);
         }
@@ -2090,9 +2107,16 @@ export function Chat({
     const messageContent = content || currentDraft.trim();
     const failedDraftRestore = content ? null : currentDraft;
     if (!sendSession || isLoading || (!messageContent && pendingAttachments.length === 0)) return;
-    if (!connected) {
-      setError("Gateway is still connecting. Please try again in a moment.");
-      addDiag("send blocked: gateway not connected");
+    const liveClient = clientRef.current;
+    if (!liveClient || !liveClient.isConnected()) {
+      if (!connectInFlightRef.current) {
+        void connectToGateway();
+      }
+      const details = lastGatewayError ? ` Last gateway error: ${lastGatewayError}` : "";
+      setError(`Gateway is still connecting. Please try again in a moment.${details}`);
+      addDiag(
+        `send blocked: gateway not connected (connected=${connected} gatewayRunning=${gatewayRunning} provider=${connectedProvider || "none"} proxy=${proxyEnabled})`
+      );
       return;
     }
 
@@ -2154,11 +2178,7 @@ export function Chat({
         );
       }
       addDiag(`send -> session=${sendSession} len=${messageContent.length}`);
-      const client = clientRef.current;
-      if (!client || !client.isConnected()) {
-        throw new Error("Gateway disconnected. Reconnecting...");
-      }
-      const runId = await client.sendMessage(sendSession, messageContent, []);
+      const runId = await liveClient.sendMessage(sendSession, messageContent, []);
       if (!runId) {
         throw new Error("Failed to start response stream");
       }
