@@ -913,11 +913,6 @@ const FEATURED_CLAWHUB_SKILLS: &[(&str, &str, &str)] = &[
         "Intelligent text summarization for long documents and content.",
     ),
     (
-        "arun-8687/tavily-search",
-        "Tavily Web Search",
-        "Web search powered by Tavily for real-time information retrieval.",
-    ),
-    (
         "slack",
         "Slack",
         "Send and manage Slack messages and channels.",

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import clsx from "clsx";
-import { CheckCircle2, Loader2, Search, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Loader2, Search, ShieldCheck, Download, Star, ExternalLink, Box, Puzzle, Sparkles, ChevronRight, Info } from "lucide-react";
 import {
   getIntegrations,
   getIntegrationsCached,
@@ -232,15 +232,13 @@ const MESSAGING_PLUGIN_IDS = new Set([
 const HIDDEN_PLUGIN_IDS = new Set(["matrix", "mstreams"]);
 
 const FEATURED_SLUGS = new Set([
-  "github", "ontology", "summarize",
-  "arun-8687/tavily-search", "slack",
+  "github", "ontology", "summarize", "slack",
 ]);
 
 const FEATURED_SKILLS_FALLBACK: ClawhubCatalogSkill[] = [
   { slug: "github", display_name: "GitHub", summary: "Interact with GitHub repos, issues, PRs, and commits.", downloads: 0, installs_all_time: 0, stars: 0 },
   { slug: "ontology", display_name: "Ontology", summary: "Knowledge graph and ontology management for structured reasoning.", downloads: 0, installs_all_time: 0, stars: 0 },
   { slug: "summarize", display_name: "Summarize", summary: "Intelligent text summarization for long documents and content.", downloads: 0, installs_all_time: 0, stars: 0 },
-  { slug: "arun-8687/tavily-search", display_name: "Tavily Web Search", summary: "Web search powered by Tavily for real-time information retrieval.", downloads: 0, installs_all_time: 0, stars: 0 },
   { slug: "slack", display_name: "Slack", summary: "Send and manage Slack messages and channels.", downloads: 0, installs_all_time: 0, stars: 0 },
 ];
 
@@ -253,7 +251,7 @@ const CATEGORIES = [
 
 function scanBadge(result: PluginScanResult | null) {
   if (!result) {
-    return { label: "Not Scanned", className: "bg-[var(--system-gray-6)] text-[var(--text-secondary)]" };
+    return { label: "Not Scanned", className: "bg-gray-100 text-gray-500" };
   }
   if (!result.scanner_available) {
     return { label: "Scanner Unavailable", className: "bg-amber-50 text-amber-700" };
@@ -315,12 +313,20 @@ export function Store({
   const [skillScanResults, setSkillScanResults] = useState<Record<string, PluginScanResult>>({});
   const syncedIntegrationsRef = useRef<Set<string>>(new Set());
 
+  // Redesign state
+  const [activeTab, setActiveTab] = useState<"plugins" | "skills">(view);
+  const [skillsSubTab, setSkillsSubTab] = useState<"market" | "installed">("market");
+
   useEffect(() => {
     refreshPlugins();
     refreshIntegrations();
     refreshSkills();
     refreshClawhubCatalog({ silent: true });
   }, []);
+
+  useEffect(() => {
+    setActiveTab(view);
+  }, [view]);
 
   useEffect(() => {
     const handleIntegrationUpdate = () => {
@@ -367,17 +373,13 @@ export function Store({
 
       setSkillScanResults((prev) => {
         const next: Record<string, PluginScanResult> = {};
-        const nextIds = new Set<string>();
-
         for (const skill of list) {
-          nextIds.add(skill.id);
           if (skill.scan) {
             next[skill.id] = skill.scan;
           } else if (prev[skill.id]) {
             next[skill.id] = prev[skill.id];
           }
         }
-
         return next;
       });
     } catch (err) {
@@ -491,12 +493,12 @@ export function Store({
   }, [setupProvider]);
 
   useEffect(() => {
-    if (view !== "skills") return;
+    if (activeTab !== "skills") return;
     const timer = window.setTimeout(() => {
       refreshClawhubCatalog();
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [view, skillQuery, clawhubSort]);
+  }, [activeTab, skillQuery, clawhubSort]);
 
   useEffect(() => {
     if (!setupProvider) return;
@@ -523,176 +525,6 @@ export function Store({
         console.warn(`Failed to sync ${integration.provider} to OpenClaw:`, err);
       }
     }
-  }
-
-  const pluginsSansNovaX = useMemo(() => plugins.filter((p) => p.id !== NOVA_X_SKILL_ID), [plugins]);
-  const visiblePlugins = useMemo(
-    () => pluginsSansNovaX.filter((p) => !MESSAGING_PLUGIN_IDS.has(p.id) && !HIDDEN_PLUGIN_IDS.has(p.id)),
-    [pluginsSansNovaX]
-  );
-
-  const filteredPlugins = useMemo(
-    () => (category === "all" ? visiblePlugins : visiblePlugins.filter((p) => p.category === category)),
-    [category, visiblePlugins]
-  );
-
-  const googleIntegrations: GoogleIntegration[] = useMemo(() => {
-    return GOOGLE_INTEGRATIONS.map((gi) => {
-      const entry = integrations.find((i) => i.provider === gi.id);
-      return {
-        ...gi,
-        connected: !!entry && !entry.stale,
-        stale: entry?.stale,
-        email: entry?.email,
-      };
-    });
-  }, [integrations]);
-
-  const xIntegration = useMemo(() => integrations.find((i) => i.provider === "x"), [integrations]);
-  const xConnected = !!xIntegration && !xIntegration.stale;
-
-  const installedSkillCards = useMemo(() => {
-    const cards: SkillCard[] = [
-      {
-        id: NOVA_X_SKILL_ID,
-        name: "X Research",
-        description: "Default Nova skill for searching posts, reading profiles, and pulling thread context.",
-        sourceLabel: "Nova Default",
-        tags: ["x", "search", "default"],
-        integrationProvider: "x",
-        pluginId: NOVA_X_SKILL_ID,
-        connected: xConnected,
-        managed: true,
-      },
-      ...workspaceSkills.map((skill) => ({
-        id: skill.id,
-        name: skill.name || skill.id,
-        description: skill.description || "Workspace skill",
-        sourceLabel: skill.source || "Workspace",
-        tags: ["workspace", "custom"],
-        workspaceSkillId: skill.id,
-        path: skill.path,
-      })),
-    ];
-
-    const needle = skillQuery.trim().toLowerCase();
-    const filtered = !needle ? cards : cards.filter((skill) => {
-      const haystack = [skill.name, skill.description, skill.sourceLabel, ...skill.tags].join(" ").toLowerCase();
-      return haystack.includes(needle);
-    });
-
-    const managed = filtered
-      .filter((skill) => skill.managed)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const others = filtered
-      .filter((skill) => !skill.managed)
-      .sort((a, b) => a.name.localeCompare(b.name));
-    return [...managed, ...others];
-  }, [workspaceSkills, skillQuery, xConnected]);
-
-  const installedWorkspaceSkillIds = useMemo(
-    () => new Set(workspaceSkills.map((skill) => skill.id)),
-    [workspaceSkills]
-  );
-
-  const featuredSkills = useMemo(
-    () =>
-      Array.from(FEATURED_SLUGS).map(
-        (slug) =>
-          clawhubCatalog.find((s) => s.slug === slug) ??
-          FEATURED_SKILLS_FALLBACK.find((s) => s.slug === slug)!
-      ),
-    [clawhubCatalog]
-  );
-
-  const browseSkills = useMemo(
-    () => clawhubCatalog.filter((s) => !FEATURED_SLUGS.has(s.slug)),
-    [clawhubCatalog]
-  );
-
-  const isRateLimited = clawhubCatalog.some((s) => s.is_fallback);
-
-  function renderSkillCard(skill: ClawhubCatalogSkill) {
-    const installed = installedWorkspaceSkillIds.has(skill.slug);
-    const expanded = expandedClawhubSlug === skill.slug;
-    const details = clawhubDetails[skill.slug];
-    return (
-      <div key={skill.slug} className="aspect-[5/4] rounded-xl border border-[var(--border-subtle)] bg-[var(--system-gray-6)]/40 p-3 flex flex-col">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-semibold text-[var(--text-primary)] line-clamp-1">{skill.display_name || skill.slug}</h3>
-              {installed ? (
-                <span className="text-[10px] font-bold uppercase tracking-wider text-green-700 bg-green-50 px-2 py-1 rounded-md">
-                  Installed
-                </span>
-              ) : (
-                <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)] bg-white px-2 py-1 rounded-md border border-[var(--border-subtle)]">
-                  ClawHub
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-[var(--text-tertiary)] mt-0.5 line-clamp-1">{skill.slug}</p>
-          </div>
-        </div>
-        <p className="mt-2 text-xs text-[var(--text-secondary)] line-clamp-2">{skill.summary || "No summary provided."}</p>
-        <div className="mt-2 flex flex-wrap gap-1 text-[10px] text-[var(--text-tertiary)]">
-          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">v{skill.latest_version || "latest"}</span>
-          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">★ {formatCompactNumber(skill.stars)}</span>
-          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">↓ {formatCompactNumber(skill.downloads)}</span>
-          <span className="px-2 py-0.5 rounded-full bg-white border border-[var(--border-subtle)]">↺ {formatCompactNumber(skill.installs_all_time)}</span>
-        </div>
-        <div className="mt-auto pt-3">
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => toggleClawhubDetails(skill.slug)}
-              className="py-2 rounded-lg text-xs font-semibold bg-white border border-[var(--border-subtle)] text-[var(--text-primary)]"
-            >
-              {expanded ? "Hide Details" : "Details"}
-            </button>
-            <button
-              onClick={() => scanInstallSkillFromClawhub(skill.slug, false)}
-              disabled={clawhubBusy || installed}
-              className={clsx(
-                "py-2 rounded-lg text-xs font-semibold",
-                installed
-                  ? "bg-[var(--system-gray-6)] text-[var(--text-tertiary)]"
-                  : "bg-[var(--system-blue)] text-white"
-              )}
-            >
-              {installed
-                ? "Installed"
-                : clawhubBusy && clawhubBusySlug === skill.slug
-                  ? "Scanning..."
-                  : "Install"}
-            </button>
-          </div>
-        </div>
-        {expanded && (
-          <div className="mt-3 rounded-lg bg-white border border-[var(--border-subtle)] p-3 text-xs">
-            {clawhubDetailLoading === skill.slug && (
-              <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                Loading details...
-              </div>
-            )}
-            {clawhubDetailError && (
-              <p className="text-red-600">{clawhubDetailError}</p>
-            )}
-            {details && (
-              <div className="space-y-1 text-[var(--text-secondary)]">
-                <p><span className="font-semibold text-[var(--text-primary)]">Owner:</span> {details.owner_display_name || details.owner_handle || "Unknown"}</p>
-                <p><span className="font-semibold text-[var(--text-primary)]">Latest:</span> {details.latest_version || "latest"}</p>
-                <p><span className="font-semibold text-[var(--text-primary)]">Installs:</span> {details.installs_all_time}</p>
-                {details.changelog && (
-                  <p className="whitespace-pre-wrap line-clamp-4"><span className="font-semibold text-[var(--text-primary)]">Changelog:</span> {details.changelog}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
   }
 
   async function beginSecurityScan(params: {
@@ -903,378 +735,502 @@ export function Store({
     }
   }
 
-  const activeTab = view;
-  const showIntegrations = activeTab === "plugins" && (category === "all" || category === "integrations");
-  const setupLabel = setupProvider ? INTEGRATION_NAMES[setupProvider] : "";
+  const pluginsSansNovaX = useMemo(() => plugins.filter((p) => p.id !== NOVA_X_SKILL_ID), [plugins]);
+  const visiblePlugins = useMemo(
+    () => pluginsSansNovaX.filter((p) => !MESSAGING_PLUGIN_IDS.has(p.id) && !HIDDEN_PLUGIN_IDS.has(p.id)),
+    [pluginsSansNovaX]
+  );
+
+  const filteredPlugins = useMemo(
+    () => (category === "all" ? visiblePlugins : visiblePlugins.filter((p) => p.category === category)),
+    [category, visiblePlugins]
+  );
+
+  const googleIntegrations: GoogleIntegration[] = useMemo(() => {
+    return GOOGLE_INTEGRATIONS.map((gi) => {
+      const entry = integrations.find((i) => i.provider === gi.id);
+      return {
+        ...gi,
+        connected: !!entry && !entry.stale,
+        stale: entry?.stale,
+        email: entry?.email,
+      };
+    });
+  }, [integrations]);
+
+  const xIntegration = useMemo(() => integrations.find((i) => i.provider === "x"), [integrations]);
+  const xConnected = !!xIntegration && !xIntegration.stale;
+
+  const installedSkillCards = useMemo(() => {
+    const cards: SkillCard[] = [
+      {
+        id: NOVA_X_SKILL_ID,
+        name: "X Research",
+        description: "Default Nova skill for searching posts, reading profiles, and pulling thread context.",
+        sourceLabel: "Nova Default",
+        tags: ["x", "search", "default"],
+        integrationProvider: "x",
+        pluginId: NOVA_X_SKILL_ID,
+        connected: xConnected,
+        managed: true,
+      },
+      ...workspaceSkills.map((skill) => ({
+        id: skill.id,
+        name: skill.name || skill.id,
+        description: skill.description || "Workspace skill",
+        sourceLabel: skill.source || "Workspace",
+        tags: ["workspace", "custom"],
+        workspaceSkillId: skill.id,
+        path: skill.path,
+      })),
+    ];
+
+    const needle = skillQuery.trim().toLowerCase();
+    const filtered = !needle ? cards : cards.filter((skill) => {
+      const haystack = [skill.name, skill.description, skill.sourceLabel, ...skill.tags].join(" ").toLowerCase();
+      return haystack.includes(needle);
+    });
+
+    const managed = filtered
+      .filter((skill) => skill.managed)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const others = filtered
+      .filter((skill) => !skill.managed)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return [...managed, ...others];
+  }, [workspaceSkills, skillQuery, xConnected]);
+
+  const installedWorkspaceSkillIds = useMemo(
+    () => new Set(workspaceSkills.map((skill) => skill.id)),
+    [workspaceSkills]
+  );
+
+  const featuredSkills = useMemo(
+    () =>
+      Array.from(FEATURED_SLUGS).map(
+        (slug) =>
+          clawhubCatalog.find((s) => s.slug === slug) ??
+          FEATURED_SKILLS_FALLBACK.find((s) => s.slug === slug)!
+      ),
+    [clawhubCatalog]
+  );
+
+  const browseSkills = useMemo(
+    () => clawhubCatalog.filter((s) => !FEATURED_SLUGS.has(s.slug)),
+    [clawhubCatalog]
+  );
+
+  const isRateLimited = clawhubCatalog.some((s) => s.is_fallback);
+
+  function renderClawhubSkillCard(skill: ClawhubCatalogSkill) {
+    const installed = installedWorkspaceSkillIds.has(skill.slug);
+    const expanded = expandedClawhubSlug === skill.slug;
+    const details = clawhubDetails[skill.slug];
+
+    return (
+      <div key={skill.slug} className="group bg-white rounded-[24px] p-5 shadow-sm border border-gray-100 hover:shadow-xl hover:shadow-gray-200/40 transition-all duration-300 flex flex-col h-full">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="font-bold text-[15px] text-gray-900 leading-tight truncate">{skill.display_name || skill.slug}</h3>
+              {skill.stars > 10 && (
+                <div className="flex items-center gap-0.5 text-amber-500">
+                  <Star className="w-3 h-3 fill-current" />
+                  <span className="text-[10px] font-bold">{formatCompactNumber(skill.stars)}</span>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">v{skill.latest_version || "1.0"}</span>
+              <div className="w-1 h-1 rounded-full bg-gray-200" />
+              <span className="text-[10px] font-medium text-gray-400 lowercase">{skill.slug}</span>
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <button
+              onClick={() => scanInstallSkillFromClawhub(skill.slug, false)}
+              disabled={clawhubBusy || installed}
+              className={clsx(
+                "px-5 py-1.5 rounded-full text-xs font-bold transition-all uppercase tracking-wider",
+                installed
+                  ? "bg-gray-100 text-gray-400 cursor-default"
+                  : "bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white"
+              )}
+            >
+              {installed
+                ? "Installed"
+                : clawhubBusy && clawhubBusySlug === skill.slug
+                  ? "..."
+                  : "Get"}
+            </button>
+            <div className="flex items-center gap-1.5 text-[10px] text-gray-400 font-medium bg-gray-50 px-2 py-0.5 rounded-full border border-gray-100">
+              <Download className="w-3 h-3" />
+              {formatCompactNumber(skill.downloads)}
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-4 flex-1">
+          <p className="text-[13px] text-gray-500 leading-relaxed line-clamp-3 mb-2">{skill.summary || "No description available."}</p>
+        </div>
+
+        <button
+          onClick={() => toggleClawhubDetails(skill.slug)}
+          className="w-full py-2.5 rounded-xl text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-100 hover:bg-gray-100 hover:text-gray-700 transition-colors flex items-center justify-center gap-2"
+        >
+          {expanded ? "Hide Details" : "Learn More"}
+          <ChevronRight className={clsx("w-3.5 h-3.5 transition-transform", expanded && "rotate-90")} />
+        </button>
+
+        {expanded && (
+          <div className="mt-4 pt-4 border-t border-gray-100 animate-in fade-in slide-in-from-top-2 duration-300">
+            {clawhubDetailLoading === skill.slug ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="w-5 h-5 animate-spin text-gray-300" />
+              </div>
+            ) : clawhubDetailError ? (
+              <p className="text-xs text-red-500 text-center">{clawhubDetailError}</p>
+            ) : details ? (
+              <div className="space-y-3 text-xs text-gray-600">
+                <div className="flex justify-between">
+                  <span className="font-medium">Developer</span>
+                  <span className="text-gray-900">{details.owner_display_name || details.owner_handle || "OpenClaw"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="font-medium">Total Installs</span>
+                  <span className="text-gray-900">{formatCompactNumber(details.installs_all_time)}</span>
+                </div>
+                {details.changelog && (
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <p className="font-bold text-[10px] uppercase tracking-wider mb-1 text-gray-400">What's New</p>
+                    <p className="line-clamp-4 leading-relaxed">{details.changelog}</p>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-6xl mx-auto px-6 pb-12">
-      <div className="pt-8 mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-[var(--text-primary)] mb-2 tracking-tight">
-            {activeTab === "skills" ? "Skills" : "Plugin Store"}
-          </h1>
-          <p className="text-lg text-[var(--text-secondary)]">
-            {activeTab === "skills"
-              ? "Browse, scan, and install skills."
-              : "Manage tools and account integrations."}
-          </p>
+    <div className="min-h-screen bg-[#FBFBFD] selection:bg-blue-100">
+      {/* Redesigned Header */}
+      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-2xl border-b border-gray-200/50">
+        <div className="max-w-7xl mx-auto px-6 lg:px-10">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 py-6">
+            <div>
+              <h1 className="text-[34px] font-bold text-gray-900 tracking-tight leading-tight">
+                {activeTab === "skills" ? "Skills" : "Plugins"}
+              </h1>
+              <div className="flex items-center gap-3 mt-2">
+                <p className="text-[17px] text-gray-500 font-medium">
+                  {activeTab === "skills"
+                    ? "Enhance your AI with powerful new capabilities."
+                    : "Manage your tools and connected services."}
+                </p>
+                {integrationsSyncing && (
+                  <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-xs font-bold uppercase tracking-wider animate-pulse">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Syncing
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Redesigned Search */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
+              <div className="relative group">
+                <Search className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 transition-colors" />
+                <input
+                  value={skillQuery}
+                  onChange={(e) => setSkillQuery(e.target.value)}
+                  className="w-full sm:w-[280px] pl-11 pr-4 py-3 bg-gray-100 border-none rounded-[18px] text-[14px] font-medium placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all duration-300"
+                  placeholder={activeTab === "skills" ? "Search ClawHub..." : "Search plugins..."}
+                />
+              </div>
+            </div>
+          </div>
         </div>
-        {integrationsSyncing ? (
-          <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-[var(--text-tertiary)] bg-white px-3 py-1 rounded-full shadow-sm border border-[var(--border-subtle)]">
-            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            Syncing integrations
-          </div>
-        ) : integrationsMissing ? (
-          <div className="text-xs text-amber-600 uppercase tracking-wide bg-amber-50 px-3 py-1 rounded-full border border-amber-100">
-            Integrations need reconnect
-          </div>
-        ) : null}
       </div>
 
-      {activeTab === "plugins" && (
-        <>
-          <div className="flex gap-3 mb-8 overflow-x-auto pb-2 scrollbar-hide">
-            {CATEGORIES.map((cat) => (
+      <div className="max-w-7xl mx-auto px-6 lg:px-10 pb-24">
+        {activeTab === "plugins" ? (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Category Filter */}
+            <div className="flex gap-2 py-8 overflow-x-auto no-scrollbar">
+              {CATEGORIES.map((cat) => (
+                <button
+                  key={cat.id}
+                  onClick={() => setCategory(cat.id)}
+                  className={clsx(
+                    "px-6 py-2 rounded-full text-[13px] font-bold transition-all whitespace-nowrap border-2",
+                    category === cat.id
+                      ? "bg-gray-900 text-white border-gray-900"
+                      : "bg-white text-gray-500 border-gray-100 hover:border-gray-200"
+                  )}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Google Services Section */}
+            {(category === "all" || category === "integrations") && googleIntegrations.length > 0 && (
+              <div className="mb-16">
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Google Workspace</h2>
+                  <div className="h-px flex-1 mx-6 bg-gray-100" />
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {googleIntegrations.map((integration) => (
+                    <div key={integration.id} className="group bg-white rounded-3xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex items-center justify-between">
+                      <div className="flex items-center gap-5">
+                        <div className="w-16 h-16 rounded-2xl bg-white border border-gray-100 shadow-sm flex items-center justify-center group-hover:scale-105 transition-transform">
+                          <integration.icon className="w-9 h-9" />
+                        </div>
+                        <div>
+                          <div className="font-bold text-gray-900 text-[16px] mb-0.5">{integration.name}</div>
+                          <div className="text-[13px] text-gray-500 font-medium">
+                            {integration.email || integration.description}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => integration.connected && !integration.stale ? handleDisconnectIntegration(integration.id) : handleConnectIntegration(integration.id)}
+                        disabled={connecting === integration.id}
+                        className={clsx(
+                          "px-6 py-2 rounded-full text-xs font-bold uppercase tracking-wider transition-all",
+                          integration.connected && !integration.stale
+                            ? "bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                            : "bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white"
+                        )}
+                      >
+                        {connecting === integration.id ? "..." : integration.connected ? "Disconnect" : "Connect"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* All Plugins Section */}
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Available Tools</h2>
+                <div className="h-px flex-1 mx-6 bg-gray-100" />
+              </div>
+              {filteredPlugins.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredPlugins.map((plugin) => (
+                    <div key={plugin.id} className="group bg-white rounded-3xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex flex-col h-full">
+                      <div className="flex items-start justify-between mb-4">
+                        {PLUGIN_ICONS[plugin.id] ? (
+                          <div className="w-14 h-14 rounded-2xl bg-gray-50 border border-gray-100 flex items-center justify-center text-blue-600 font-bold text-xl group-hover:scale-105 transition-transform">
+                            {(() => { const Icon = PLUGIN_ICONS[plugin.id]; return <Icon className="w-8 h-8" />; })()}
+                          </div>
+                        ) : null}
+                        {plugin.enabled && (
+                          <span className="px-3 py-1 bg-green-50 text-green-600 rounded-full text-[10px] font-bold uppercase tracking-widest">Active</span>
+                        )}
+                      </div>
+                      <div className="flex-1 mb-6">
+                        <h3 className="font-bold text-gray-900 text-[16px] mb-1">{plugin.name}</h3>
+                        <p className="text-[13px] text-gray-400 font-bold uppercase tracking-wider mb-3">by {plugin.author}</p>
+                        <p className="text-[14px] text-gray-500 leading-relaxed line-clamp-3 font-medium">{plugin.description}</p>
+                      </div>
+                      {plugin.managed ? (
+                        <div className="w-full py-2.5 bg-gray-50 rounded-xl text-[11px] font-bold text-gray-400 uppercase tracking-widest text-center border border-gray-100">
+                          System Plugin
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => (plugin.enabled ? handleDisablePlugin(plugin.id) : handleEnablePlugin(plugin.id))}
+                          disabled={installing === plugin.id}
+                          className={clsx(
+                            "w-full py-3 rounded-xl text-xs font-bold transition-all uppercase tracking-wider",
+                            plugin.enabled
+                              ? "bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                              : "bg-blue-600 text-white shadow-lg shadow-blue-200 hover:shadow-blue-300 hover:translate-y-[-1px]"
+                          )}
+                        >
+                          {installing === plugin.id ? "Processing..." : plugin.enabled ? "Uninstall" : "Install Tool"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="py-32 text-center">
+                  <h3 className="text-xl font-bold text-gray-900 mb-2">No plugins found</h3>
+                  <p className="text-gray-500 font-medium">Try searching for something else or changing categories.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Skills Content Tabs */}
+            <div className="flex items-center gap-8 py-8 border-b border-gray-100 mb-8 overflow-x-auto no-scrollbar">
               <button
-                key={cat.id}
-                onClick={() => setCategory(cat.id)}
+                onClick={() => setSkillsSubTab("market")}
                 className={clsx(
-                  "px-5 py-2 rounded-full font-medium text-sm transition-all whitespace-nowrap",
-                  category === cat.id
-                    ? "bg-black text-white shadow-md"
-                    : "bg-white text-[var(--text-secondary)] hover:bg-[var(--system-gray-6)] shadow-sm border border-[var(--border-subtle)]"
+                  "pb-2 text-[15px] font-bold transition-all relative whitespace-nowrap",
+                  skillsSubTab === "market" ? "text-blue-600" : "text-gray-400 hover:text-gray-600"
                 )}
               >
-                {cat.label}
+                Marketplace
+                {skillsSubTab === "market" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-full" />}
               </button>
-            ))}
-          </div>
+              <button
+                onClick={() => setSkillsSubTab("installed")}
+                className={clsx(
+                  "pb-2 text-[15px] font-bold transition-all relative whitespace-nowrap",
+                  skillsSubTab === "installed" ? "text-blue-600" : "text-gray-400 hover:text-gray-600"
+                )}
+              >
+                My Skills ({installedSkillCards.length})
+                {skillsSubTab === "installed" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-full" />}
+              </button>
+            </div>
 
-          {showIntegrations && googleIntegrations.length > 0 && (
-            <div className="mb-10">
-              <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4 flex items-center gap-2">
-                Google Workspace
-              </h2>
+            {skillsSubTab === "market" ? (
+              <>
+                {/* Security Banner */}
+                <div className="relative overflow-hidden bg-gradient-to-br from-white to-blue-50/30 border border-blue-100 rounded-[24px] p-6 mb-10 shadow-sm shadow-blue-100/20">
+                  <div className="relative z-10 flex flex-col md:flex-row md:items-center gap-6">
+                    <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-200 shrink-0">
+                      <ShieldCheck className="w-8 h-8 text-white" strokeWidth={2.5} />
+                    </div>
+                    <div className="flex-1">
+                      <h2 className="text-xl font-bold text-gray-900 mb-1 tracking-tight">Verified by Cisco AI Defense</h2>
+                      <p className="text-[15px] text-gray-600 leading-snug max-w-2xl font-medium">
+                        All skills on ClawHub are automatically audited for security and behavioral risks by Cisco's industry-leading scanner.
+                      </p>
+                    </div>
+                    <a
+                      href="https://github.com/cisco-ai-defense/skill-scanner"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-5 py-2.5 bg-white text-gray-900 rounded-xl text-[13px] font-bold shadow-sm border border-gray-100 hover:bg-gray-50 transition-all flex items-center gap-2 shrink-0"
+                    >
+                      <Info className="w-4 h-4 text-blue-600" />
+                      Scanner Specs
+                    </a>
+                  </div>
+                  {/* Decorative element */}
+                  <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-100/20 rounded-full blur-3xl pointer-events-none" />
+                </div>
 
-              <div className="bg-white rounded-2xl shadow-sm border border-[var(--border-subtle)] p-6">
-                <div className="flex items-center gap-4 mb-6">
-                  <div className="w-14 h-14 bg-white rounded-xl shadow-sm border border-[var(--border-subtle)] flex items-center justify-center">
-                    <GoogleWorkspaceIcon className="w-8 h-8" />
+                <div className="mb-16">
+                  <div className="flex items-center gap-4 mb-8">
+                    <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Featured Skills</h2>
+                    <div className="px-2.5 py-0.5 bg-amber-50 text-amber-600 rounded-full text-[10px] font-bold uppercase tracking-widest border border-amber-100">Editor's Choice</div>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-[var(--text-primary)]">Google Services</h3>
-                    <p className="text-sm text-[var(--text-secondary)]">Connect your calendar and email for seamless assistance.</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    {featuredSkills.map((skill) => renderClawhubSkillCard(skill))}
                   </div>
-                  {googleIntegrations.every((i) => i.connected) && (
-                    <div className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-green-50 text-green-700 rounded-full text-xs font-medium">
-                      <CheckCircle2 className="w-4 h-4" />
-                      All Connected
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-8">
+                    <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Explore ClawHub</h2>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Sort:</span>
+                      <select
+                        value={clawhubSort}
+                        onChange={(e) => setClawhubSort(e.target.value as ClawhubSort)}
+                        className="bg-transparent border-none text-xs font-bold text-blue-600 focus:ring-0 cursor-pointer"
+                      >
+                        <option value="stars">Most Stars</option>
+                        <option value="downloads">Most Popular</option>
+                        <option value="installs">Trending</option>
+                        <option value="newest">Newest</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {clawhubLoading ? (
+                    <div className="py-24 flex flex-col items-center gap-4">
+                      <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+                      <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Loading catalog...</p>
+                    </div>
+                  ) : clawhubLookupError ? (
+                    <div className="bg-red-50 border border-red-100 rounded-3xl p-8 text-center text-red-600">
+                      <p className="font-bold">{clawhubLookupError}</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                      {browseSkills.map((skill) => renderClawhubSkillCard(skill))}
                     </div>
                   )}
                 </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {googleIntegrations.map((integration) => {
-                    const Icon = integration.icon;
-                    return (
-                      <div key={integration.id} className="flex items-center justify-between p-4 rounded-xl bg-[var(--system-gray-6)]/50 border border-[var(--border-subtle)]">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-sm">
-                            <Icon className="w-6 h-6" />
-                          </div>
-                          <div>
-                            <div className="font-semibold text-[var(--text-primary)]">{integration.name}</div>
-                            {integration.email ? (
-                              <div className="text-xs text-[var(--text-tertiary)]">{integration.email}</div>
-                            ) : (
-                              <div className="text-xs text-[var(--text-tertiary)]">{integration.description}</div>
-                            )}
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={() =>
-                            integration.connected && !integration.stale
-                              ? handleDisconnectIntegration(integration.id)
-                              : handleConnectIntegration(integration.id)
-                          }
-                          disabled={connecting === integration.id}
-                          className={clsx(
-                            "btn !text-xs !font-semibold",
-                            integration.connected && !integration.stale
-                              ? "bg-white border border-[var(--border-subtle)] text-[var(--text-secondary)]"
-                              : "bg-black text-white hover:bg-gray-800"
-                          )}
-                        >
-                          {connecting === integration.id ? "..." : integration.connected ? "Disconnect" : "Connect"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {filteredPlugins.length > 0 && (
-            <div className="mb-10">
-              {showIntegrations && googleIntegrations.length > 0 && (
-                <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">All Plugins</h2>
-              )}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {filteredPlugins.map((plugin) => (
-                  <div key={plugin.id} className="group bg-white rounded-2xl p-5 shadow-sm border border-[var(--border-subtle)] hover:shadow-md transition-all flex flex-col h-full">
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="w-12 h-12 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl flex items-center justify-center text-blue-600 font-bold text-lg border border-blue-100">
-                        {PLUGIN_ICONS[plugin.id] ? (
-                          (() => { const Icon = PLUGIN_ICONS[plugin.id]; return <Icon className="w-7 h-7" />; })()
-                        ) : (
-                          plugin.name.slice(0, 1)
-                        )}
-                      </div>
-                      {plugin.enabled && (
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-green-600 bg-green-50 px-2 py-1 rounded-md">Installed</span>
-                      )}
-                    </div>
-
-                    <div className="mb-4 flex-1">
-                      <h3 className="font-bold text-[var(--text-primary)] mb-1 line-clamp-1">{plugin.name}</h3>
-                      <p className="text-xs text-[var(--text-tertiary)] mb-2">by {plugin.author}</p>
-                      <p className="text-sm text-[var(--text-secondary)] line-clamp-3">{plugin.description}</p>
-                    </div>
-
-                    {plugin.managed ? (
-                      <button disabled className="w-full py-2 bg-[var(--system-gray-6)] text-[var(--text-tertiary)] rounded-lg text-sm font-medium cursor-not-allowed">
-                        Managed System Plugin
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => (plugin.enabled ? handleDisablePlugin(plugin.id) : handleEnablePlugin(plugin.id))}
-                        disabled={installing === plugin.id}
-                        className={clsx(
-                          "w-full py-2 rounded-lg text-sm font-semibold transition-colors",
-                          plugin.enabled
-                            ? "bg-[var(--system-gray-6)] text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600"
-                            : "bg-[var(--system-blue)] text-white hover:bg-blue-600 shadow-sm"
-                        )}
-                      >
-                        {installing === plugin.id ? "Processing..." : plugin.enabled ? "Uninstall" : "Install"}
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {filteredPlugins.length === 0 && (!showIntegrations || googleIntegrations.length === 0) && (
-            <div className="text-center py-20">
-              <div className="w-16 h-16 bg-[var(--system-gray-6)] rounded-full flex items-center justify-center mx-auto mb-4 text-[var(--text-tertiary)]">
-                <ShieldCheck className="w-8 h-8" />
-              </div>
-              <h3 className="text-lg font-medium text-[var(--text-primary)] mb-1">No plugins found</h3>
-              <p className="text-[var(--text-secondary)]">Try selecting a different category.</p>
-            </div>
-          )}
-        </>
-      )}
-
-      {activeTab === "skills" && (
-        <>
-          {skillsLoading && (
-            <div className="py-8 text-sm text-[var(--text-secondary)] flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Loading skills...
-            </div>
-          )}
-
-          {!skillsLoading && skillsError && (
-            <div className="mb-6 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {skillsError}
-            </div>
-          )}
-
-          {!skillsLoading && (
-            <div>
-              <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Installed Skills</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              </>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {installedSkillCards.map((skill) => {
                   const badge = skill.managed
-                    ? { label: "Nova Managed", className: "bg-blue-50 text-blue-700" }
+                    ? { label: "Managed", className: "bg-blue-50 text-blue-600 border-blue-100" }
                     : scanBadge(skillScanResults[skill.id] || null);
+                  const Icon = skill.pluginId ? PLUGIN_ICONS[skill.pluginId] : null;
+
                   return (
-                    <div
-                      key={skill.id}
-                      className="aspect-[5/4] bg-white rounded-2xl p-3 shadow-sm border border-[var(--border-subtle)] flex flex-col"
-                    >
-                      <div className="flex items-start gap-2">
-                        <div className="w-10 h-10 bg-[var(--system-gray-6)] rounded-xl flex items-center justify-center shrink-0">
-                          {skill.id === NOVA_X_SKILL_ID ? <XLogo className="w-5 h-5 text-[var(--text-primary)]" /> : <ShieldCheck className="w-5 h-5 text-[var(--text-tertiary)]" />}
-                        </div>
+                    <div key={skill.id} className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex flex-col">
+                      <div className="flex items-start gap-4 mb-4">
+                        {Icon && (
+                          <div className="w-12 h-12 rounded-[16px] bg-gray-50 flex items-center justify-center shadow-inner shrink-0 border border-gray-100">
+                            <Icon className="w-7 h-7" />
+                          </div>
+                        )}
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-bold text-[var(--text-primary)] truncate">{skill.name}</h3>
-                            <span className={clsx("text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md", badge.className)}>
+                          <h3 className="font-bold text-gray-900 text-[15px] truncate">{skill.name}</h3>
+                          <div className="flex flex-wrap items-center gap-2 mt-1">
+                            <span className={clsx("px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest border", badge.className)}>
                               {badge.label}
                             </span>
                           </div>
-                          <p className="text-xs text-[var(--text-tertiary)] mt-0.5 line-clamp-1">{skill.sourceLabel}</p>
                         </div>
                       </div>
-                      <p className="mt-2 text-xs text-[var(--text-secondary)] line-clamp-2 flex-none">{skill.description}</p>
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {skill.tags.slice(0, 3).map((tag) => (
-                          <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--system-gray-6)] text-[var(--text-secondary)]">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                      {skill.path && <p className="mt-2 text-[10px] text-[var(--text-tertiary)] break-all line-clamp-1 flex-none">{skill.path}</p>}
-                      <div className="mt-auto pt-3">
-                        <div className={clsx("grid gap-2", skill.managed ? "grid-cols-1" : "grid-cols-2")}>
-                          {!skill.managed && (
-                            <button
-                              onClick={() => handleAuditSkill(skill)}
-                              className="py-2 rounded-lg text-xs font-semibold bg-[var(--system-gray-6)] text-[var(--text-primary)] hover:bg-[var(--system-gray-5)]"
-                            >
-                              Security Scan
-                            </button>
-                          )}
-                          {skill.integrationProvider ? (
-                            <button
-                              onClick={() =>
-                                skill.connected
-                                  ? handleDisconnectIntegration(skill.integrationProvider as IntegrationProvider)
-                                  : handleConnectIntegration(skill.integrationProvider as IntegrationProvider)
-                              }
-                              disabled={connecting === skill.integrationProvider}
-                              className={clsx(
-                                "py-2 rounded-lg text-xs font-semibold",
-                                skill.connected
-                                  ? "bg-green-50 text-green-700 border border-green-100"
-                                  : "bg-[var(--system-blue)] text-white"
-                              )}
-                            >
-                              {connecting === skill.integrationProvider ? "..." : skill.connected ? "Connected" : "Connect X"}
-                            </button>
-                          ) : skill.workspaceSkillId ? (
-                            <button
-                              onClick={() => handleRemoveWorkspaceSkill(skill.workspaceSkillId as string)}
-                              disabled={removingSkill === skill.workspaceSkillId}
-                              className="py-2 rounded-lg text-xs font-semibold bg-red-50 text-red-700 border border-red-100 disabled:opacity-60"
-                            >
-                              {removingSkill === skill.workspaceSkillId ? "Removing..." : "Remove"}
-                            </button>
-                          ) : (
-                            <button disabled className="py-2 rounded-lg text-xs font-semibold bg-[var(--system-gray-6)] text-[var(--text-tertiary)]">
-                              Local Skill
-                            </button>
-                          )}
-                        </div>
+                      <p className="text-[13px] text-gray-500 font-medium leading-relaxed line-clamp-3 mb-4 flex-1">{skill.description}</p>
+                      
+                      <div className="flex flex-col gap-2 mt-auto">
+                        {!skill.managed && (
+                          <button
+                            onClick={() => handleAuditSkill(skill)}
+                            className="w-full py-2 bg-gray-50 text-gray-600 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-gray-100 transition-colors border border-gray-100"
+                          >
+                            Audit
+                          </button>
+                        )}
+                        {skill.integrationProvider ? (
+                          <button
+                            onClick={() => skill.connected ? handleDisconnectIntegration(skill.integrationProvider as IntegrationProvider) : handleConnectIntegration(skill.integrationProvider as IntegrationProvider)}
+                            disabled={connecting === skill.integrationProvider}
+                            className={clsx(
+                              "w-full py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all",
+                              skill.connected ? "bg-green-50 text-green-600" : "bg-blue-600 text-white shadow-lg shadow-blue-100"
+                            )}
+                          >
+                            {connecting === skill.integrationProvider ? "..." : skill.connected ? "Connected" : "Setup"}
+                          </button>
+                        ) : skill.workspaceSkillId ? (
+                          <button
+                            onClick={() => handleRemoveWorkspaceSkill(skill.workspaceSkillId as string)}
+                            disabled={removingSkill === skill.workspaceSkillId}
+                            className="w-full py-2 bg-red-50 text-red-600 rounded-xl text-xs font-bold uppercase tracking-widest hover:bg-red-100 transition-colors border border-red-100"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   );
                 })}
               </div>
-            </div>
-          )}
-
-          {!skillsLoading && installedSkillCards.length === 0 && (
-            <div className="text-center py-20">
-              <div className="w-16 h-16 bg-[var(--system-gray-6)] rounded-full flex items-center justify-center mx-auto mb-4 text-[var(--text-tertiary)]">
-                <Search className="w-8 h-8" />
-              </div>
-              <h3 className="text-lg font-medium text-[var(--text-primary)] mb-1">No matching skills</h3>
-              <p className="text-[var(--text-secondary)]">Try a different search term or install a skill from ClawHub below.</p>
-            </div>
-          )}
-
-          <div className="mb-8 bg-white rounded-2xl border border-[var(--border-subtle)] p-5">
-            <p className="text-xs uppercase tracking-wide text-[var(--text-tertiary)] mb-2">Skill Lookup</p>
-            <div className="flex flex-col lg:flex-row lg:items-center gap-3">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-[var(--text-tertiary)] absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  value={skillQuery}
-                  onChange={(e) => setSkillQuery(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-[var(--border-subtle)] bg-white text-sm"
-                  placeholder="Search by skill name, slug, or description"
-                />
-              </div>
-              <select
-                value={clawhubSort}
-                onChange={(e) => setClawhubSort(e.target.value as ClawhubSort)}
-                className="px-3 py-2 rounded-lg border border-[var(--border-subtle)] bg-white text-sm"
-              >
-                <option value="stars">Most Stars</option>
-                <option value="downloads">Most Downloads</option>
-                <option value="installs">Most Installs</option>
-                <option value="newest">Newest</option>
-              </select>
-            </div>
-            <p className="text-xs text-[var(--text-secondary)] mt-2">
-              Search first, then install from the ClawHub rows below. Nova scans before install.
-            </p>
-            {clawhubError && <p className="text-xs text-red-600 mt-2">{clawhubError}</p>}
-          </div>
-
-          <div className="mb-10">
-            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Featured Skills</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {featuredSkills.map((skill) => renderSkillCard(skill))}
-            </div>
-          </div>
-
-          <div className="mb-10">
-            <h2 className="text-xl font-bold text-[var(--text-primary)] mb-4">Browse more from ClawHub</h2>
-            {clawhubLoading && (
-              <div className="py-8 text-sm text-[var(--text-secondary)] flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Loading ClawHub skills...
-              </div>
-            )}
-
-            {!clawhubLoading && clawhubLookupError && (
-              <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
-                {clawhubLookupError}
-              </div>
-            )}
-
-            {!clawhubLoading && !clawhubLookupError && isRateLimited && (
-              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-3">
-                Full catalog temporarily unavailable due to rate limiting.
-              </div>
-            )}
-
-            {!clawhubLoading && !clawhubLookupError && browseSkills.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {browseSkills.map((skill) => renderSkillCard(skill))}
-              </div>
-            )}
-
-            {!clawhubLoading && !clawhubLookupError && !isRateLimited && browseSkills.length === 0 && (
-              <div className="text-center py-12 text-sm text-[var(--text-secondary)]">
-                No ClawHub skills found for this search.
-              </div>
             )}
           </div>
-        </>
-      )}
-
-      <div className="mt-12 pt-6 border-t border-[var(--border-subtle)] flex items-center justify-center gap-2 text-xs text-[var(--text-tertiary)]">
-        <ShieldCheck className="w-3.5 h-3.5" />
-        <span>
-          Securely validated by{" "}
-          <a
-            href="https://github.com/cisco-ai-defense/skill-scanner"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hover:text-[var(--text-secondary)] underline transition-colors"
-          >
-            Cisco AI Defense Skill Scanner
-          </a>
-        </span>
+        )}
       </div>
 
       <ScanResultModal
@@ -1293,9 +1249,7 @@ export function Store({
           scanIntent === "plugin-enable"
             ? confirmEnablePlugin
             : pendingUnsafeSlug
-              ? () => {
-                  void scanInstallSkillFromClawhub(pendingUnsafeSlug, true);
-                }
+              ? () => { void scanInstallSkillFromClawhub(pendingUnsafeSlug, true); }
               : undefined
         }
         confirmLabel={scanIntent === "plugin-enable" ? "Enable Plugin" : "Install Skill"}
@@ -1303,29 +1257,23 @@ export function Store({
       />
 
       {setupProvider && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl border border-[var(--border-subtle)]">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 rounded-full bg-[var(--bg-tertiary)] p-2">
-                <Loader2 className="w-4 h-4 animate-spin text-[var(--text-primary)]" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-[32px] bg-white p-8 shadow-2xl border border-gray-100 animate-in zoom-in-95 duration-200">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-16 h-16 rounded-3xl bg-blue-50 flex items-center justify-center mb-6">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
               </div>
-              <div>
-                <div className="text-sm font-semibold text-[var(--text-primary)]">Setting up {setupLabel}</div>
-                <div className="text-xs text-[var(--text-secondary)] mt-1">
-                  {setupStage === "authorizing"
-                    ? "Finish authorization in your browser. We’ll update Nova as soon as it’s complete."
-                    : "Saving credentials and syncing with Nova so the plugin is ready to use."}
-                </div>
-                {setupTimedOut && (
-                  <div className="text-xs text-amber-600 mt-2">
-                    This is taking longer than usual. You can keep waiting or continue in the background.
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button className="btn btn-secondary !text-xs" onClick={() => setSetupProvider(null)}>
-                Continue in background
+              <h2 className="text-xl font-bold text-gray-900 mb-2">Setting up {setupProvider}</h2>
+              <p className="text-sm text-gray-500 font-medium leading-relaxed mb-8">
+                {setupStage === "authorizing"
+                  ? "Finish authorization in your browser. We'll update Nova as soon as it's complete."
+                  : "Syncing your credentials with Nova..."}
+              </p>
+              <button
+                className="w-full py-3 bg-gray-100 text-gray-900 rounded-2xl text-[14px] font-bold hover:bg-gray-200 transition-colors"
+                onClick={() => setSetupProvider(null)}
+              >
+                Continue in Background
               </button>
             </div>
           </div>
