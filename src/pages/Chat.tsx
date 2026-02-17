@@ -1311,6 +1311,7 @@ export function Chat({
         clientRef.current = null;
       }
       setConnected(false);
+      setIsConnecting(false);
       connectInFlightRef.current = false;
       return;
     }
@@ -1399,6 +1400,7 @@ export function Chat({
       };
       const onDisconnected = () => {
         setConnected(false);
+        setIsConnecting(false);
         if (activeRunIdRef.current) {
           setIsLoading(false);
           setError("Connection lost while waiting for response. Please retry.");

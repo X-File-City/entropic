@@ -828,11 +828,11 @@ export function Store({
     const details = clawhubDetails[skill.slug];
 
     return (
-      <div key={skill.slug} className="group bg-white rounded-[24px] p-5 shadow-sm border border-gray-100 hover:shadow-xl hover:shadow-gray-200/40 transition-all duration-300 flex flex-col h-full">
+      <div key={skill.slug} className="group bg-white rounded-xl p-4 shadow-sm border border-[var(--border-subtle)] hover:shadow-md transition-all duration-300 flex flex-col h-full">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <h3 className="font-bold text-[15px] text-gray-900 leading-tight truncate">{skill.display_name || skill.slug}</h3>
+              <h3 className="font-semibold text-sm text-[var(--text-primary)] leading-tight truncate">{skill.display_name || skill.slug}</h3>
               {skill.stars > 10 && (
                 <div className="flex items-center gap-0.5 text-amber-500">
                   <Star className="w-3 h-3 fill-current" />
@@ -841,9 +841,9 @@ export function Store({
               )}
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">v{skill.latest_version || "1.0"}</span>
-              <div className="w-1 h-1 rounded-full bg-gray-200" />
-              <span className="text-[10px] font-medium text-gray-400 lowercase">{skill.slug}</span>
+              <span className="text-[10px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wide">v{skill.latest_version || "1.0"}</span>
+              <div className="w-1 h-1 rounded-full bg-[var(--border-default)]" />
+              <span className="text-[10px] font-medium text-[var(--text-tertiary)] lowercase">{skill.slug}</span>
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -851,10 +851,10 @@ export function Store({
               onClick={() => scanInstallSkillFromClawhub(skill.slug, false)}
               disabled={clawhubBusy || installed}
               className={clsx(
-                "px-5 py-1.5 rounded-full text-xs font-bold transition-all uppercase tracking-wider",
+                "px-4 py-1.5 rounded-full text-[11px] font-semibold transition-all uppercase tracking-wide",
                 installed
-                  ? "bg-gray-100 text-gray-400 cursor-default"
-                  : "bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white"
+                  ? "bg-[var(--system-gray-6)] text-[var(--text-tertiary)] cursor-default"
+                  : "bg-[var(--system-blue)]/10 text-[var(--system-blue)] hover:bg-[var(--system-blue)] hover:text-white"
               )}
             >
               {installed
@@ -863,7 +863,7 @@ export function Store({
                   ? "..."
                   : "Get"}
             </button>
-            <div className="flex items-center gap-1.5 text-[10px] text-gray-400 font-medium bg-gray-50 px-2 py-0.5 rounded-full border border-gray-100">
+            <div className="flex items-center gap-1.5 text-[10px] text-[var(--text-tertiary)] font-medium bg-[var(--system-gray-6)] px-2 py-0.5 rounded-full border border-[var(--border-subtle)]">
               <Download className="w-3 h-3" />
               {formatCompactNumber(skill.downloads)}
             </div>
@@ -871,38 +871,38 @@ export function Store({
         </div>
 
         <div className="mb-4 flex-1">
-          <p className="text-[13px] text-gray-500 leading-relaxed line-clamp-3 mb-2">{skill.summary || "No description available."}</p>
+          <p className="text-sm text-[var(--text-secondary)] leading-relaxed line-clamp-3 mb-2">{skill.summary || "No description available."}</p>
         </div>
 
         <button
           onClick={() => toggleClawhubDetails(skill.slug)}
-          className="w-full py-2.5 rounded-xl text-xs font-semibold text-gray-500 bg-gray-50 border border-gray-100 hover:bg-gray-100 hover:text-gray-700 transition-colors flex items-center justify-center gap-2"
+          className="w-full py-2 rounded-lg text-xs font-semibold text-[var(--text-secondary)] bg-[var(--system-gray-6)] border border-[var(--border-subtle)] hover:bg-[var(--system-gray-5)] hover:text-[var(--text-primary)] transition-colors flex items-center justify-center gap-2"
         >
           {expanded ? "Hide Details" : "Learn More"}
           <ChevronRight className={clsx("w-3.5 h-3.5 transition-transform", expanded && "rotate-90")} />
         </button>
 
         {expanded && (
-          <div className="mt-4 pt-4 border-t border-gray-100 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="mt-4 pt-4 border-t border-[var(--border-subtle)] animate-in fade-in slide-in-from-top-2 duration-300">
             {clawhubDetailLoading === skill.slug ? (
               <div className="flex items-center justify-center py-4">
-                <Loader2 className="w-5 h-5 animate-spin text-gray-300" />
+                <Loader2 className="w-5 h-5 animate-spin text-[var(--text-tertiary)]" />
               </div>
             ) : clawhubDetailError ? (
               <p className="text-xs text-red-500 text-center">{clawhubDetailError}</p>
             ) : details ? (
-              <div className="space-y-3 text-xs text-gray-600">
+              <div className="space-y-3 text-xs text-[var(--text-secondary)]">
                 <div className="flex justify-between">
                   <span className="font-medium">Developer</span>
-                  <span className="text-gray-900">{details.owner_display_name || details.owner_handle || "OpenClaw"}</span>
+                  <span className="text-[var(--text-primary)]">{details.owner_display_name || details.owner_handle || "OpenClaw"}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-medium">Total Installs</span>
-                  <span className="text-gray-900">{formatCompactNumber(details.installs_all_time)}</span>
+                  <span className="text-[var(--text-primary)]">{formatCompactNumber(details.installs_all_time)}</span>
                 </div>
                 {details.changelog && (
-                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
-                    <p className="font-bold text-[10px] uppercase tracking-wider mb-1 text-gray-400">What's New</p>
+                  <div className="bg-[var(--system-gray-6)] rounded-lg p-3 border border-[var(--border-subtle)]">
+                    <p className="font-semibold text-[10px] uppercase tracking-wide mb-1 text-[var(--text-tertiary)]">What's New</p>
                     <p className="line-clamp-4 leading-relaxed">{details.changelog}</p>
                   </div>
                 )}
@@ -915,60 +915,51 @@ export function Store({
   }
 
   return (
-    <div className="min-h-screen bg-[#FBFBFD] selection:bg-blue-100">
-      {/* Redesigned Header */}
-      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-2xl border-b border-gray-200/50">
-        <div className="max-w-7xl mx-auto px-6 lg:px-10">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 py-6">
-            <div>
-              <h1 className="text-[34px] font-bold text-gray-900 tracking-tight leading-tight">
-                {activeTab === "skills" ? "Skills" : "Plugins"}
-              </h1>
-              <div className="flex items-center gap-3 mt-2">
-                <p className="text-[17px] text-gray-500 font-medium">
-                  {activeTab === "skills"
-                    ? "Enhance your AI with powerful new capabilities."
-                    : "Manage your tools and connected services."}
-                </p>
-                {integrationsSyncing && (
-                  <div className="flex items-center gap-2 px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-xs font-bold uppercase tracking-wider animate-pulse">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Syncing
-                  </div>
-                )}
-              </div>
+    <div className="h-full flex flex-col p-6">
+      <div className="mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold" style={{ color: "var(--text-primary)" }}>
+            {activeTab === "skills" ? "Skills" : "Plugins"}
+          </h1>
+          <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>
+            {activeTab === "skills"
+              ? "Enhance your AI with new capabilities."
+              : "Manage tools and connected services."}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {integrationsSyncing && (
+            <div className="flex items-center gap-2 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide bg-[var(--system-blue)]/10 text-[var(--system-blue)]">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Syncing
             </div>
-
-            {/* Redesigned Search */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
-              <div className="relative group">
-                <Search className="w-4 h-4 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2 group-focus-within:text-blue-500 transition-colors" />
-                <input
-                  value={skillQuery}
-                  onChange={(e) => setSkillQuery(e.target.value)}
-                  className="w-full sm:w-[280px] pl-11 pr-4 py-3 bg-gray-100 border-none rounded-[18px] text-[14px] font-medium placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all duration-300"
-                  placeholder={activeTab === "skills" ? "Search ClawHub..." : "Search plugins..."}
-                />
-              </div>
-            </div>
+          )}
+          <div className="relative group">
+            <Search className="w-4 h-4 text-[var(--text-tertiary)] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={skillQuery}
+              onChange={(e) => setSkillQuery(e.target.value)}
+              className="w-full sm:w-[260px] pl-9 pr-3 py-2.5 rounded-lg border border-[var(--border-default)] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[var(--system-blue)]/20"
+              placeholder={activeTab === "skills" ? "Search skills..." : "Search plugins..."}
+            />
           </div>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 lg:px-10 pb-24">
+      <div className="flex-1 overflow-auto max-w-6xl w-full mx-auto">
         {activeTab === "plugins" ? (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             {/* Category Filter */}
-            <div className="flex gap-2 py-8 overflow-x-auto no-scrollbar">
+            <div className="flex gap-2 py-4 overflow-x-auto no-scrollbar">
               {CATEGORIES.map((cat) => (
                 <button
                   key={cat.id}
                   onClick={() => setCategory(cat.id)}
                   className={clsx(
-                    "px-6 py-2 rounded-full text-[13px] font-bold transition-all whitespace-nowrap border-2",
+                    "px-4 py-2 rounded-full text-[12px] font-semibold transition-all whitespace-nowrap border",
                     category === cat.id
-                      ? "bg-gray-900 text-white border-gray-900"
-                      : "bg-white text-gray-500 border-gray-100 hover:border-gray-200"
+                      ? "bg-[var(--text-primary)] text-white border-[var(--text-primary)]"
+                      : "bg-white text-[var(--text-secondary)] border-[var(--border-default)] hover:bg-[var(--system-gray-6)]"
                   )}
                 >
                   {cat.label}
@@ -978,21 +969,20 @@ export function Store({
 
             {/* Google Services Section */}
             {(category === "all" || category === "integrations") && googleIntegrations.length > 0 && (
-              <div className="mb-16">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Google Workspace</h2>
-                  <div className="h-px flex-1 mx-6 bg-gray-100" />
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="mb-10">
+                <h2 className="text-[13px] font-medium uppercase tracking-wide mb-3 px-1 text-[var(--text-secondary)]">
+                  Google Workspace
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {googleIntegrations.map((integration) => (
-                    <div key={integration.id} className="group bg-white rounded-3xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex items-center justify-between">
-                      <div className="flex items-center gap-5">
-                        <div className="w-16 h-16 rounded-2xl bg-white border border-gray-100 shadow-sm flex items-center justify-center group-hover:scale-105 transition-transform">
-                          <integration.icon className="w-9 h-9" />
+                    <div key={integration.id} className="bg-white rounded-xl p-4 shadow-sm border border-[var(--border-subtle)] flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 rounded-xl bg-[var(--system-gray-6)] border border-[var(--border-subtle)] flex items-center justify-center">
+                          <integration.icon className="w-7 h-7" />
                         </div>
                         <div>
-                          <div className="font-bold text-gray-900 text-[16px] mb-0.5">{integration.name}</div>
-                          <div className="text-[13px] text-gray-500 font-medium">
+                          <div className="font-semibold text-[var(--text-primary)] text-sm">{integration.name}</div>
+                          <div className="text-xs text-[var(--text-secondary)]">
                             {integration.email || integration.description}
                           </div>
                         </div>
@@ -1001,10 +991,10 @@ export function Store({
                         onClick={() => integration.connected && !integration.stale ? handleDisconnectIntegration(integration.id) : handleConnectIntegration(integration.id)}
                         disabled={connecting === integration.id}
                         className={clsx(
-                          "px-6 py-2 rounded-full text-xs font-bold uppercase tracking-wider transition-all",
+                          "px-4 py-1.5 rounded-full text-[11px] font-semibold uppercase tracking-wide transition-all",
                           integration.connected && !integration.stale
-                            ? "bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-600"
-                            : "bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white"
+                            ? "bg-[var(--system-gray-6)] text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600"
+                            : "bg-[var(--system-blue)] text-white hover:opacity-90"
                         )}
                       >
                         {connecting === integration.id ? "..." : integration.connected ? "Disconnect" : "Connect"}
@@ -1017,31 +1007,30 @@ export function Store({
 
             {/* All Plugins Section */}
             <div>
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Available Tools</h2>
-                <div className="h-px flex-1 mx-6 bg-gray-100" />
-              </div>
+              <h2 className="text-[13px] font-medium uppercase tracking-wide mb-3 px-1 text-[var(--text-secondary)]">
+                Available Tools
+              </h2>
               {filteredPlugins.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {filteredPlugins.map((plugin) => (
-                    <div key={plugin.id} className="group bg-white rounded-3xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex flex-col h-full">
+                    <div key={plugin.id} className="bg-white rounded-xl p-4 shadow-sm border border-[var(--border-subtle)] flex flex-col h-full">
                       <div className="flex items-start justify-between mb-4">
                         {PLUGIN_ICONS[plugin.id] ? (
-                          <div className="w-14 h-14 rounded-2xl bg-gray-50 border border-gray-100 flex items-center justify-center text-blue-600 font-bold text-xl group-hover:scale-105 transition-transform">
+                          <div className="w-12 h-12 rounded-xl bg-[var(--system-gray-6)] border border-[var(--border-subtle)] flex items-center justify-center text-[var(--system-blue)]">
                             {(() => { const Icon = PLUGIN_ICONS[plugin.id]; return <Icon className="w-8 h-8" />; })()}
                           </div>
                         ) : null}
                         {plugin.enabled && (
-                          <span className="px-3 py-1 bg-green-50 text-green-600 rounded-full text-[10px] font-bold uppercase tracking-widest">Active</span>
+                          <span className="px-2.5 py-1 bg-green-50 text-green-600 rounded-full text-[10px] font-semibold uppercase tracking-wide">Active</span>
                         )}
                       </div>
                       <div className="flex-1 mb-6">
-                        <h3 className="font-bold text-gray-900 text-[16px] mb-1">{plugin.name}</h3>
-                        <p className="text-[13px] text-gray-400 font-bold uppercase tracking-wider mb-3">by {plugin.author}</p>
-                        <p className="text-[14px] text-gray-500 leading-relaxed line-clamp-3 font-medium">{plugin.description}</p>
+                        <h3 className="font-semibold text-[var(--text-primary)] text-sm mb-1">{plugin.name}</h3>
+                        <p className="text-[11px] text-[var(--text-tertiary)] uppercase tracking-wide mb-2">by {plugin.author}</p>
+                        <p className="text-sm text-[var(--text-secondary)] leading-relaxed line-clamp-3">{plugin.description}</p>
                       </div>
                       {plugin.managed ? (
-                        <div className="w-full py-2.5 bg-gray-50 rounded-xl text-[11px] font-bold text-gray-400 uppercase tracking-widest text-center border border-gray-100">
+                        <div className="w-full py-2 rounded-lg bg-[var(--system-gray-6)] text-[11px] font-semibold text-[var(--text-tertiary)] uppercase tracking-wide text-center border border-[var(--border-subtle)]">
                           System Plugin
                         </div>
                       ) : (
@@ -1049,10 +1038,10 @@ export function Store({
                           onClick={() => (plugin.enabled ? handleDisablePlugin(plugin.id) : handleEnablePlugin(plugin.id))}
                           disabled={installing === plugin.id}
                           className={clsx(
-                            "w-full py-3 rounded-xl text-xs font-bold transition-all uppercase tracking-wider",
+                            "w-full py-2.5 rounded-lg text-xs font-semibold transition-all uppercase tracking-wide",
                             plugin.enabled
-                              ? "bg-gray-100 text-gray-500 hover:bg-red-50 hover:text-red-600"
-                              : "bg-blue-600 text-white shadow-lg shadow-blue-200 hover:shadow-blue-300 hover:translate-y-[-1px]"
+                              ? "bg-[var(--system-gray-6)] text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600"
+                              : "bg-[var(--system-blue)] text-white hover:opacity-90"
                           )}
                         >
                           {installing === plugin.id ? "Processing..." : plugin.enabled ? "Uninstall" : "Install Tool"}
@@ -1063,8 +1052,8 @@ export function Store({
                 </div>
               ) : (
                 <div className="py-32 text-center">
-                  <h3 className="text-xl font-bold text-gray-900 mb-2">No plugins found</h3>
-                  <p className="text-gray-500 font-medium">Try searching for something else or changing categories.</p>
+                  <h3 className="text-xl font-semibold text-[var(--text-primary)] mb-2">No plugins found</h3>
+                  <p className="text-[var(--text-secondary)]">Try searching for something else or changing categories.</p>
                 </div>
               )}
             </div>
@@ -1072,40 +1061,40 @@ export function Store({
         ) : (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
             {/* Skills Content Tabs */}
-            <div className="flex items-center gap-8 py-8 border-b border-gray-100 mb-8 overflow-x-auto no-scrollbar">
+            <div className="flex items-center gap-6 py-4 border-b border-[var(--border-subtle)] mb-6 overflow-x-auto no-scrollbar">
               <button
                 onClick={() => setSkillsSubTab("market")}
                 className={clsx(
-                  "pb-2 text-[15px] font-bold transition-all relative whitespace-nowrap",
-                  skillsSubTab === "market" ? "text-blue-600" : "text-gray-400 hover:text-gray-600"
+                  "pb-2 text-sm font-semibold transition-all relative whitespace-nowrap",
+                  skillsSubTab === "market" ? "text-[var(--system-blue)]" : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
                 )}
               >
                 Marketplace
-                {skillsSubTab === "market" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-full" />}
+                {skillsSubTab === "market" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--system-blue)] rounded-full" />}
               </button>
               <button
                 onClick={() => setSkillsSubTab("installed")}
                 className={clsx(
-                  "pb-2 text-[15px] font-bold transition-all relative whitespace-nowrap",
-                  skillsSubTab === "installed" ? "text-blue-600" : "text-gray-400 hover:text-gray-600"
+                  "pb-2 text-sm font-semibold transition-all relative whitespace-nowrap",
+                  skillsSubTab === "installed" ? "text-[var(--system-blue)]" : "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
                 )}
               >
                 My Skills ({installedSkillCards.length})
-                {skillsSubTab === "installed" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-full" />}
+                {skillsSubTab === "installed" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--system-blue)] rounded-full" />}
               </button>
             </div>
 
             {skillsSubTab === "market" ? (
               <>
                 {/* Security Banner */}
-                <div className="relative overflow-hidden bg-gradient-to-br from-white to-blue-50/30 border border-blue-100 rounded-[24px] p-6 mb-10 shadow-sm shadow-blue-100/20">
+                <div className="relative overflow-hidden bg-white border border-[var(--border-subtle)] rounded-xl p-5 mb-8 shadow-sm">
                   <div className="relative z-10 flex flex-col md:flex-row md:items-center gap-6">
-                    <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-200 shrink-0">
-                      <ShieldCheck className="w-8 h-8 text-white" strokeWidth={2.5} />
+                    <div className="w-12 h-12 rounded-xl bg-[var(--system-blue)] flex items-center justify-center shrink-0">
+                      <ShieldCheck className="w-6 h-6 text-white" strokeWidth={2.5} />
                     </div>
                     <div className="flex-1">
-                      <h2 className="text-xl font-bold text-gray-900 mb-1 tracking-tight">Verified by Cisco AI Defense</h2>
-                      <p className="text-[15px] text-gray-600 leading-snug max-w-2xl font-medium">
+                      <h2 className="text-sm font-semibold text-[var(--text-primary)] mb-1">Verified by Cisco AI Defense</h2>
+                      <p className="text-sm text-[var(--text-secondary)] leading-snug max-w-2xl">
                         All skills on ClawHub are automatically audited for security and behavioral risks by Cisco's industry-leading scanner.
                       </p>
                     </div>
@@ -1113,35 +1102,33 @@ export function Store({
                       href="https://github.com/cisco-ai-defense/skill-scanner"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="px-5 py-2.5 bg-white text-gray-900 rounded-xl text-[13px] font-bold shadow-sm border border-gray-100 hover:bg-gray-50 transition-all flex items-center gap-2 shrink-0"
+                      className="px-4 py-2 bg-white rounded-lg text-xs font-semibold border border-[var(--border-default)] hover:bg-[var(--system-gray-6)] transition-all flex items-center gap-2 shrink-0"
                     >
-                      <Info className="w-4 h-4 text-blue-600" />
+                      <Info className="w-4 h-4 text-[var(--system-blue)]" />
                       Scanner Specs
                     </a>
                   </div>
-                  {/* Decorative element */}
-                  <div className="absolute -top-24 -right-24 w-64 h-64 bg-blue-100/20 rounded-full blur-3xl pointer-events-none" />
                 </div>
 
-                <div className="mb-16">
-                  <div className="flex items-center gap-4 mb-8">
-                    <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Featured Skills</h2>
+                <div className="mb-10">
+                  <div className="flex items-center gap-4 mb-4">
+                    <h2 className="text-[13px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Featured Skills</h2>
                     <div className="px-2.5 py-0.5 bg-amber-50 text-amber-600 rounded-full text-[10px] font-bold uppercase tracking-widest border border-amber-100">Editor's Choice</div>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {featuredSkills.map((skill) => renderClawhubSkillCard(skill))}
                   </div>
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-between mb-8">
-                    <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Explore ClawHub</h2>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-[13px] font-medium uppercase tracking-wide text-[var(--text-secondary)]">Explore ClawHub</h2>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Sort:</span>
+                      <span className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wide">Sort:</span>
                       <select
                         value={clawhubSort}
                         onChange={(e) => setClawhubSort(e.target.value as ClawhubSort)}
-                        className="bg-transparent border-none text-xs font-bold text-blue-600 focus:ring-0 cursor-pointer"
+                        className="bg-transparent border-none text-xs font-semibold text-[var(--system-blue)] focus:ring-0 cursor-pointer"
                       >
                         <option value="stars">Most Stars</option>
                         <option value="downloads">Most Popular</option>
@@ -1153,22 +1140,22 @@ export function Store({
 
                   {clawhubLoading ? (
                     <div className="py-24 flex flex-col items-center gap-4">
-                      <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
-                      <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Loading catalog...</p>
+                      <Loader2 className="w-8 h-8 animate-spin text-[var(--system-blue)]" />
+                      <p className="text-[var(--text-tertiary)] font-semibold uppercase tracking-wide text-[10px]">Loading catalog...</p>
                     </div>
                   ) : clawhubLookupError ? (
-                    <div className="bg-red-50 border border-red-100 rounded-3xl p-8 text-center text-red-600">
-                      <p className="font-bold">{clawhubLookupError}</p>
+                    <div className="bg-red-50 border border-red-100 rounded-xl p-8 text-center text-red-600">
+                      <p className="font-semibold">{clawhubLookupError}</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                       {browseSkills.map((skill) => renderClawhubSkillCard(skill))}
                     </div>
                   )}
                 </div>
               </>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {installedSkillCards.map((skill) => {
                   const badge = skill.managed
                     ? { label: "Managed", className: "bg-blue-50 text-blue-600 border-blue-100" }
@@ -1176,15 +1163,15 @@ export function Store({
                   const Icon = skill.pluginId ? PLUGIN_ICONS[skill.pluginId] : null;
 
                   return (
-                    <div key={skill.id} className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 flex flex-col">
+                    <div key={skill.id} className="bg-white rounded-xl p-4 shadow-sm border border-[var(--border-subtle)] hover:shadow-md transition-all duration-300 flex flex-col">
                       <div className="flex items-start gap-4 mb-4">
                         {Icon && (
-                          <div className="w-12 h-12 rounded-[16px] bg-gray-50 flex items-center justify-center shadow-inner shrink-0 border border-gray-100">
+                            <div className="w-12 h-12 rounded-xl bg-[var(--system-gray-6)] flex items-center justify-center shrink-0 border border-[var(--border-subtle)]">
                             <Icon className="w-7 h-7" />
                           </div>
                         )}
                         <div className="min-w-0 flex-1">
-                          <h3 className="font-bold text-gray-900 text-[15px] truncate">{skill.name}</h3>
+                          <h3 className="font-semibold text-[var(--text-primary)] text-sm truncate">{skill.name}</h3>
                           <div className="flex flex-wrap items-center gap-2 mt-1">
                             <span className={clsx("px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-widest border", badge.className)}>
                               {badge.label}
@@ -1192,7 +1179,7 @@ export function Store({
                           </div>
                         </div>
                       </div>
-                      <p className="text-[13px] text-gray-500 font-medium leading-relaxed line-clamp-3 mb-4 flex-1">{skill.description}</p>
+                      <p className="text-sm text-[var(--text-secondary)] leading-relaxed line-clamp-3 mb-4 flex-1">{skill.description}</p>
                       
                       <div className="flex flex-col gap-2 mt-auto">
                         {!skill.managed && (

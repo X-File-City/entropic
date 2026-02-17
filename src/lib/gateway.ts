@@ -171,6 +171,30 @@ export class GatewayClient {
 
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const connectTimeoutMs = 15_000;
+      const connectTimeout = setTimeout(() => {
+        rejectOnce(
+          new GatewayError(
+            `Gateway connection timed out after ${connectTimeoutMs}ms waiting for authentication`,
+            "timeout",
+          ),
+        );
+        this.ws?.close();
+      }, connectTimeoutMs);
+      const resolveOnce = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeout);
+        resolve();
+      };
+      const rejectOnce = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeout);
+        reject(error);
+      };
+
       this.log("Connecting to", this.url);
       this.ws = new WebSocket(this.url);
       this.authenticated = false;
@@ -182,7 +206,7 @@ export class GatewayClient {
       this.ws.onmessage = async (event) => {
         try {
           const frame: Frame = JSON.parse(event.data);
-          await this.handleFrame(frame, resolve, reject);
+          await this.handleFrame(frame, resolveOnce, rejectOnce);
         } catch (e) {
           this.logError("Failed to parse frame:", e);
         }
@@ -191,12 +215,20 @@ export class GatewayClient {
       this.ws.onerror = (e) => {
         this.logError("WebSocket error:", e);
         this.emit("error", "WebSocket error");
-        reject(new Error("WebSocket error"));
+        rejectOnce(new Error("WebSocket error"));
       };
 
       this.ws.onclose = (event) => {
         this.log("WebSocket closed", `code=${event.code}`, `reason=${event.reason || "(none)"}`);
         this.failPendingRequests("ws.closed", "closed", `code=${event.code} reason=${event.reason || "(none)"}`);
+        if (!this.authenticated) {
+          rejectOnce(
+            new GatewayError(
+              `Gateway socket closed during connect (code=${event.code} reason=${event.reason || "(none)"})`,
+              "ws.closed",
+            ),
+          );
+        }
         this.authenticated = false;
         this.emit("disconnected");
         this.ws = null;

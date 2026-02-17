@@ -931,66 +931,61 @@ export function Tasks({ gatewayRunning }: Props) {
   }
 
   return (
-    <div className="min-h-screen bg-[#FBFBFD] selection:bg-blue-100">
-      {/* Redesigned Header */}
-      <div className="sticky top-0 z-30 bg-white/80 backdrop-blur-2xl border-b border-gray-200/50">
-        <div className="max-w-7xl mx-auto px-6 lg:px-10 py-6">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div>
-              <h1 className="text-[34px] font-bold text-gray-900 tracking-tight leading-tight">
-                Automation
-              </h1>
-              <p className="text-[17px] text-gray-500 font-medium mt-2">
-                Manage scheduled tasks that run automatically in the background.
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={fetchJobs}
-                disabled={loading || !gatewayRunning}
-                className="p-3 bg-gray-100 rounded-2xl hover:bg-gray-200 transition-colors"
-                title="Refresh tasks"
-              >
-                <RefreshCw className={clsx("w-5 h-5 text-gray-600", loading && "animate-spin")} />
-              </button>
-              <button
-                onClick={openCreate}
-                disabled={!gatewayRunning}
-                className="px-6 py-3 bg-blue-600 text-white rounded-[18px] font-bold text-[14px] hover:bg-blue-700 shadow-lg shadow-blue-200 transition-all flex items-center gap-2 whitespace-nowrap"
-              >
-                <Plus className="w-4 h-4" />
-                New Task
-              </button>
-            </div>
-          </div>
+    <div className="h-full flex flex-col p-6">
+      <div className="mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold" style={{ color: "var(--text-primary)" }}>
+            Automation Tasks
+          </h1>
+          <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>
+            Scheduled jobs that run automatically in the background.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchJobs}
+            disabled={loading || !gatewayRunning}
+            className="p-2 rounded-lg border border-[var(--border-default)] bg-white hover:bg-[var(--system-gray-6)] transition-colors"
+            title="Refresh tasks"
+          >
+            <RefreshCw className={clsx("w-4 h-4 text-[var(--text-secondary)]", loading && "animate-spin")} />
+          </button>
+          <button
+            onClick={openCreate}
+            disabled={!gatewayRunning}
+            className="px-4 py-2 bg-[var(--system-blue)] text-white rounded-lg font-semibold text-sm hover:opacity-90 transition-all flex items-center gap-2 whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4" />
+            New Task
+          </button>
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 lg:px-10 py-10 pb-24 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex-1 overflow-auto max-w-6xl w-full mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
         
         {/* Offline Warning */}
         {!gatewayRunning && (
-          <div className="mb-10 p-6 bg-amber-50 border border-amber-100 rounded-[24px] flex items-center gap-6">
-            <div className="w-14 h-14 rounded-2xl bg-white border border-amber-100 shadow-sm flex items-center justify-center shrink-0">
-              <AlertCircle className="w-8 h-8 text-amber-500" />
+          <div className="mb-6 p-4 bg-amber-50 border border-amber-100 rounded-xl flex items-center gap-4">
+            <div className="w-10 h-10 rounded-lg bg-white border border-amber-100 flex items-center justify-center shrink-0">
+              <AlertCircle className="w-5 h-5 text-amber-500" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-amber-900 leading-tight">Secure Sandbox is Offline</h2>
-              <p className="text-[15px] text-amber-700 font-medium mt-1">Scheduled tasks won't execute until the gateway is started.</p>
+              <h2 className="text-sm font-semibold text-amber-900">Secure Sandbox is Offline</h2>
+              <p className="text-sm text-amber-700">Scheduled tasks won't execute until the gateway is started.</p>
             </div>
           </div>
         )}
 
         {/* Compact Informational Banner */}
-        <div className="mb-10 p-6 bg-gray-900 rounded-[24px] text-white relative overflow-hidden shadow-xl shadow-gray-200">
+        <div className="mb-8 p-5 bg-[var(--text-primary)] rounded-xl text-white relative overflow-hidden shadow-sm">
           <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
             <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-[14px] bg-blue-600 flex items-center justify-center shrink-0">
-                <Smartphone className="w-6 h-6 text-white" />
+              <div className="w-10 h-10 rounded-xl bg-[var(--system-blue)] flex items-center justify-center shrink-0">
+                <Smartphone className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h3 className="text-lg font-bold tracking-tight leading-tight">Keep Automation Running</h3>
-                <p className="text-[14px] text-gray-400 font-medium mt-1 leading-snug">
+                <h3 className="text-sm font-semibold">Keep Automation Running</h3>
+                <p className="text-sm text-white/75 mt-1">
                   Tasks execute only when this computer is awake.
                 </p>
               </div>
@@ -998,57 +993,57 @@ export function Tasks({ gatewayRunning }: Props) {
             
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-3 pt-4 lg:pt-0 lg:border-l lg:border-white/10 lg:pl-8">
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400 mb-0.5">macOS</p>
-                <p className="text-[12px] text-gray-300 font-medium">Displays → Advanced → Prevent Sleep</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-300 mb-0.5">macOS</p>
+                <p className="text-[12px] text-white/80">Displays → Advanced → Prevent Sleep</p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-green-400 mb-0.5">Windows</p>
-                <p className="text-[12px] text-gray-300 font-medium">Power → Plugged in, Never Sleep</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-green-300 mb-0.5">Windows</p>
+                <p className="text-[12px] text-white/80">Power → Plugged in, Never Sleep</p>
               </div>
               <div>
-                <p className="text-[10px] font-bold uppercase tracking-widest text-purple-400 mb-0.5">Linux</p>
-                <p className="text-[12px] text-gray-300 font-medium">Use systemd-inhibit tools</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-purple-300 mb-0.5">Linux</p>
+                <p className="text-[12px] text-white/80">Use systemd-inhibit tools</p>
               </div>
             </div>
           </div>
-          <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-blue-600/10 rounded-full blur-3xl" />
+          <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-[var(--system-blue)]/20 rounded-full blur-3xl" />
         </div>
 
-        <div className="mb-8">
-          <h2 className="text-[22px] font-bold text-gray-900 tracking-tight">Scheduled Jobs</h2>
-        </div>
+        <h2 className="text-[13px] font-medium uppercase tracking-wide mb-3 px-1 text-[var(--text-secondary)]">
+          Scheduled Jobs
+        </h2>
 
         {/* Task List */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pb-20">
           {gatewayRunning && loading && jobs.length === 0 ? (
             <div className="col-span-full py-32 flex flex-col items-center gap-4">
               <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
               <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Syncing tasks...</p>
             </div>
           ) : gatewayRunning && jobs.length === 0 ? (
-            <div className="col-span-full py-24 text-center bg-white rounded-[32px] border border-dashed border-gray-200">
+            <div className="col-span-full py-20 text-center bg-white rounded-xl border border-dashed border-[var(--border-default)]">
               <CalendarClock className="w-16 h-16 mx-auto mb-6 text-gray-200" strokeWidth={1.5} />
-              <h3 className="text-xl font-bold text-gray-900 mb-2">No tasks scheduled</h3>
-              <p className="text-gray-500 font-medium mb-8">Ready to automate? Create your first scheduled task above.</p>
-              <button onClick={openCreate} className="px-8 py-3 bg-gray-900 text-white rounded-2xl font-bold text-[14px] hover:bg-black transition-all">Create First Task</button>
+              <h3 className="text-xl font-semibold text-[var(--text-primary)] mb-2">No tasks scheduled</h3>
+              <p className="text-[var(--text-secondary)] mb-8">Ready to automate? Create your first scheduled task above.</p>
+              <button onClick={openCreate} className="px-6 py-2.5 bg-[var(--text-primary)] text-white rounded-lg font-semibold text-sm hover:opacity-90 transition-all">Create First Task</button>
             </div>
           ) : (
             jobs.map((job) => {
               const badge = statusBadge(job);
               return (
-                <div key={job.id} className="group bg-white rounded-[28px] p-6 shadow-sm border border-gray-100 hover:shadow-xl hover:shadow-gray-200/40 transition-all duration-300 flex flex-col">
+                <div key={job.id} className="group bg-white rounded-xl p-5 shadow-sm border border-[var(--border-subtle)] hover:shadow-md transition-all duration-300 flex flex-col">
                   <div className="flex items-start justify-between gap-4 mb-6">
                     <div className="flex items-start gap-4">
                       <div className={clsx(
-                        "w-14 h-14 rounded-[18px] flex items-center justify-center border transition-all duration-300 shrink-0",
-                        job.enabled ? "bg-blue-50 border-blue-100 text-blue-600 shadow-inner" : "bg-gray-50 border-gray-100 text-gray-400"
+                        "w-12 h-12 rounded-xl flex items-center justify-center border transition-all duration-300 shrink-0",
+                        job.enabled ? "bg-blue-50 border-blue-100 text-blue-600" : "bg-gray-50 border-gray-100 text-gray-400"
                       )}>
-                        <CalendarClock className="w-7 h-7" />
+                        <CalendarClock className="w-6 h-6" />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="font-bold text-gray-900 text-[17px] mb-1 truncate leading-tight">{job.name}</h3>
+                        <h3 className="font-semibold text-[var(--text-primary)] text-base mb-1 truncate leading-tight">{job.name}</h3>
                         <div className="flex items-center gap-2">
-                          <span className={clsx("px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-widest border", badge.className)}>
+                          <span className={clsx("px-2.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide border", badge.className)}>
                             {badge.label}
                           </span>
                         </div>
@@ -1072,33 +1067,33 @@ export function Tasks({ gatewayRunning }: Props) {
 
                   <div className="flex-1 mb-6">
                     <div className="flex items-center gap-2 mb-2">
-                      <Clock className="w-3.5 h-3.5 text-blue-500" />
-                      <span className="text-[14px] font-bold text-blue-600">{describeSchedule(job.schedule)}</span>
+                      <Clock className="w-3.5 h-3.5 text-[var(--system-blue)]" />
+                      <span className="text-[14px] font-semibold text-[var(--system-blue)]">{describeSchedule(job.schedule)}</span>
                     </div>
                     {job.description && (
-                      <p className="text-[14px] text-gray-500 font-medium leading-relaxed line-clamp-2 italic">"{job.description}"</p>
+                      <p className="text-[14px] text-[var(--text-secondary)] leading-relaxed line-clamp-2 italic">"{job.description}"</p>
                     )}
                   </div>
 
-                  <div className="flex items-center justify-between pt-6 border-t border-gray-50 mt-auto">
+                  <div className="flex items-center justify-between pt-4 border-t border-[var(--border-subtle)] mt-auto">
                     <div className="flex items-center gap-1.5">
                       <button 
                         onClick={() => handleRun(job)} 
-                        className="p-2.5 rounded-xl bg-gray-50 text-gray-600 hover:bg-green-50 hover:text-green-600 transition-all border border-gray-100" 
+                        className="p-2 rounded-lg bg-[var(--system-gray-6)] text-[var(--text-secondary)] hover:bg-green-50 hover:text-green-600 transition-all border border-[var(--border-subtle)]" 
                         title="Run Now"
                       >
                         <Play className="w-4 h-4 fill-current" />
                       </button>
                       <button 
                         onClick={() => openEdit(job)} 
-                        className="p-2.5 rounded-xl bg-gray-50 text-gray-600 hover:bg-blue-50 hover:text-blue-600 transition-all border border-gray-100" 
+                        className="p-2 rounded-lg bg-[var(--system-gray-6)] text-[var(--text-secondary)] hover:bg-blue-50 hover:text-blue-600 transition-all border border-[var(--border-subtle)]" 
                         title="Edit Task"
                       >
                         <Pencil className="w-4 h-4" />
                       </button>
                       <button 
                         onClick={() => openHistory(job)} 
-                        className="p-2.5 rounded-xl bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-all border border-gray-100" 
+                        className="p-2 rounded-lg bg-[var(--system-gray-6)] text-[var(--text-secondary)] hover:bg-[var(--system-gray-5)] hover:text-[var(--text-primary)] transition-all border border-[var(--border-subtle)]" 
                         title="History"
                       >
                         <History className="w-4 h-4" />
@@ -1106,7 +1101,7 @@ export function Tasks({ gatewayRunning }: Props) {
                     </div>
                     <button 
                       onClick={() => handleDelete(job)} 
-                      className="p-2.5 rounded-xl bg-gray-50 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-all border border-gray-100" 
+                      className="p-2 rounded-lg bg-[var(--system-gray-6)] text-[var(--text-tertiary)] hover:bg-red-50 hover:text-red-600 transition-all border border-[var(--border-subtle)]" 
                       title="Delete"
                     >
                       <Trash2 className="w-4 h-4" />

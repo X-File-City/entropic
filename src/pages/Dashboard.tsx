@@ -791,43 +791,45 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     }
   }
 
+  function renderChatPage() {
+    const gatewayStarting =
+      showGatewayStartup || (isTogglingGateway && !gatewayRunning) || gatewayRetryIn !== null;
+    return (
+      <Chat
+        gatewayRunning={gatewayRunning}
+        gatewayStarting={gatewayStarting}
+        gatewayRetryIn={gatewayRetryIn}
+        onStartGateway={startGatewayFromChat}
+        onRecoverProxyAuth={recoverProxyAuthFromChat}
+        useLocalKeys={useLocalKeys}
+        selectedModel={selectedModel}
+        onModelChange={handleModelChange}
+        imageModel={imageModel}
+        integrationsSyncing={integrationsSyncing}
+        integrationsMissing={integrationsMissing}
+        onNavigate={setCurrentPage}
+        onSessionsChange={(sessions, currentKey) => {
+          setChatSessions(sessions);
+          setCurrentChatSession((prev) => currentKey ?? prev);
+          setPendingChatSession((pending) => {
+            if (!pending) return pending;
+            if (pending === "__new__") {
+              return currentKey ? null : pending;
+            }
+            return pending === currentKey ? null : pending;
+          });
+          setPendingChatAction(null);
+        }}
+        requestedSession={pendingChatSession}
+        requestedSessionAction={pendingChatAction}
+      />
+    );
+  }
+
   function renderPage() {
     switch (currentPage) {
       case "chat":
-        {
-          const gatewayStarting =
-            showGatewayStartup || (isTogglingGateway && !gatewayRunning) || gatewayRetryIn !== null;
-        return (
-          <Chat
-            gatewayRunning={gatewayRunning}
-            gatewayStarting={gatewayStarting}
-            gatewayRetryIn={gatewayRetryIn}
-            onStartGateway={startGatewayFromChat}
-            onRecoverProxyAuth={recoverProxyAuthFromChat}
-            useLocalKeys={useLocalKeys}
-            selectedModel={selectedModel}
-            onModelChange={handleModelChange}
-            imageModel={imageModel}
-            integrationsSyncing={integrationsSyncing}
-            integrationsMissing={integrationsMissing}
-            onNavigate={setCurrentPage}
-            onSessionsChange={(sessions, currentKey) => {
-              setChatSessions(sessions);
-              setCurrentChatSession((prev) => currentKey ?? prev);
-              setPendingChatSession((pending) => {
-                if (!pending) return pending;
-                if (pending === "__new__") {
-                  return currentKey ? null : pending;
-                }
-                return pending === currentKey ? null : pending;
-              });
-              setPendingChatAction(null);
-            }}
-            requestedSession={pendingChatSession}
-            requestedSessionAction={pendingChatAction}
-          />
-        );
-        }
+        return null;
       case "store":
         return (
           <Store
@@ -956,6 +958,8 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
             }}
           />
         );
+      default:
+        return null;
     }
   }
 
@@ -1101,6 +1105,9 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
           </div>
         </div>
       )}
+      <div className={currentPage === "chat" ? "h-full" : "hidden"} aria-hidden={currentPage !== "chat"}>
+        {renderChatPage()}
+      </div>
       {renderPage()}
     </Layout>
   );
