@@ -41,6 +41,7 @@ type WorkspaceSkill = {
   description: string;
   path: string;
   source: string;
+  scan?: PluginScanResult;
 };
 
 type SkillCard = {
@@ -76,6 +77,7 @@ type ClawhubCatalogSkill = {
   installs_all_time: number;
   stars: number;
   updated_at?: number | null;
+  is_fallback?: boolean;
 };
 
 type ClawhubSkillDetails = {
@@ -349,6 +351,22 @@ export function Store({
     try {
       const list = await invoke<WorkspaceSkill[]>("get_skill_store");
       setWorkspaceSkills(list);
+
+      setSkillScanResults((prev) => {
+        const next: Record<string, PluginScanResult> = {};
+        const nextIds = new Set<string>();
+
+        for (const skill of list) {
+          nextIds.add(skill.id);
+          if (skill.scan) {
+            next[skill.id] = skill.scan;
+          } else if (prev[skill.id]) {
+            next[skill.id] = prev[skill.id];
+          }
+        }
+
+        return next;
+      });
     } catch (err) {
       const message = String(err);
       setSkillsError(message);
@@ -1100,6 +1118,12 @@ export function Store({
             {!clawhubLoading && clawhubLookupError && (
               <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {clawhubLookupError}
+              </div>
+            )}
+
+            {!clawhubLoading && !clawhubLookupError && clawhubCatalog.some((s) => s.is_fallback) && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 mb-3">
+                Showing featured skills — full catalog temporarily unavailable due to rate limiting.
               </div>
             )}
 

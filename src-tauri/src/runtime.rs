@@ -605,8 +605,7 @@ impl Runtime {
         }
 
         let lower = message.to_lowercase();
-        lower.contains("error validating sha sum")
-            || lower.contains("error getting qcow image")
+        lower.contains("error validating sha sum") || lower.contains("error getting qcow image")
     }
 
     fn is_whitespace_path_error(message: &str) -> bool {

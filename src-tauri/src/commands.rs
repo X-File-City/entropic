@@ -871,6 +871,7 @@ pub struct SkillInfo {
     pub description: String,
     pub path: String,
     pub source: String,
+    pub scan: Option<PluginScanResult>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -892,6 +893,70 @@ pub struct ClawhubCatalogSkill {
     pub installs_all_time: u64,
     pub stars: u64,
     pub updated_at: Option<u64>,
+    pub is_fallback: bool,
+}
+
+const FEATURED_CLAWHUB_SKILLS: &[(&str, &str, &str)] = &[
+    (
+        "github",
+        "GitHub",
+        "Interact with GitHub repos, issues, PRs, and commits.",
+    ),
+    (
+        "playwright-mcp",
+        "Playwright MCP",
+        "Full browser automation — navigate, click, fill forms, screenshot.",
+    ),
+    (
+        "ontology",
+        "Ontology",
+        "Knowledge graph and ontology management for structured reasoning.",
+    ),
+    (
+        "summarize",
+        "Summarize",
+        "Intelligent text summarization for long documents and content.",
+    ),
+    (
+        "tavily-web-search",
+        "Tavily Web Search",
+        "Web search powered by Tavily for real-time information retrieval.",
+    ),
+    (
+        "trello",
+        "Trello",
+        "Manage Trello boards, lists, and cards via the Trello REST API.",
+    ),
+    (
+        "slack",
+        "Slack",
+        "Send and manage Slack messages and channels.",
+    ),
+    (
+        "answer-overflow",
+        "Answer Overflow",
+        "Search and retrieve answers from community knowledge bases.",
+    ),
+];
+
+static CLAWHUB_CATALOG_CACHE: OnceLock<Mutex<Option<(Vec<ClawhubCatalogSkill>, Instant)>>> =
+    OnceLock::new();
+
+fn featured_clawhub_skills() -> Vec<ClawhubCatalogSkill> {
+    FEATURED_CLAWHUB_SKILLS
+        .iter()
+        .map(|(slug, name, summary)| ClawhubCatalogSkill {
+            slug: slug.to_string(),
+            display_name: name.to_string(),
+            summary: summary.to_string(),
+            latest_version: None,
+            downloads: 0,
+            installs_all_time: 0,
+            stars: 0,
+            updated_at: None,
+            is_fallback: true,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1160,6 +1225,20 @@ fn collect_skill_ids() -> Result<Vec<String>, String> {
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+fn collect_workspace_skill_paths() -> Result<Vec<(String, String)>, String> {
+    let mut out = Vec::new();
+    for skill_id in collect_skill_ids()? {
+        if MANAGED_PLUGIN_IDS.contains(&skill_id.as_str()) {
+            continue;
+        }
+
+        if let Some(path) = resolve_installed_skill_dir(&skill_id)? {
+            out.push((skill_id, path));
+        }
+    }
+    Ok(out)
 }
 
 fn sanitize_skill_version_component(version: &str) -> String {
@@ -1591,6 +1670,82 @@ fn parse_skill_frontmatter(raw: &str) -> (Option<String>, Option<String>) {
         }
     }
     (name, description)
+}
+
+fn parse_skill_scan_from_manifest(raw: &str) -> Option<(Option<String>, PluginScanResult, u64)> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let scan = value.get("scan")?.as_object()?;
+    let scan_id = scan
+        .get("scan_id")
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string());
+    let scan_id_for_result = scan_id.clone();
+    let is_safe = scan
+        .get("is_safe")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let max_severity = scan
+        .get("max_severity")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN")
+        .to_string();
+    let findings_count = scan
+        .get("findings_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let installed_at = value
+        .get("installed_at_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Some((
+        scan_id,
+        PluginScanResult {
+            scan_id: scan_id_for_result,
+            is_safe,
+            max_severity,
+            findings_count: findings_count.min(u32::MAX as u64) as u32,
+            findings: vec![],
+            scanner_available: true,
+        },
+        installed_at,
+    ))
+}
+
+fn read_skill_scan_from_manifest(skill_id: &str) -> Option<PluginScanResult> {
+    let manifest_root = format!("{}/{}/", SKILL_MANIFESTS_ROOT, skill_id);
+    if !container_dir_exists(&manifest_root).ok()? {
+        return None;
+    }
+
+    let listing =
+        docker_exec_output(&["exec", OPENCLAW_CONTAINER, "ls", "-1", "--", &manifest_root]).ok()?;
+
+    let mut best: Option<(u64, PluginScanResult)> = None;
+    for line in listing.lines() {
+        let file = line.trim();
+        if !file.ends_with(".json") {
+            continue;
+        }
+        if !is_safe_component(file.trim_end_matches(".json")) {
+            continue;
+        }
+        let path = format!("{}{}", manifest_root, file);
+        let raw = match read_container_file(&path) {
+            Some(value) => value,
+            None => continue,
+        };
+        let (_, scan, installed_at) = match parse_skill_scan_from_manifest(&raw) {
+            Some(value) => value,
+            None => continue,
+        };
+        match best {
+            Some((seen, _)) if seen >= installed_at => {}
+            _ => best = Some((installed_at, scan)),
+        }
+    }
+
+    best.map(|(_, scan)| scan)
 }
 
 async fn scan_directory_with_scanner(scanner_dir: &str) -> Result<PluginScanResult, String> {
@@ -2218,6 +2373,23 @@ async fn run_whatsapp_login_script(script: &str) -> Result<serde_json::Value, St
 }
 
 fn list_extension_manifests() -> Result<Vec<serde_json::Value>, String> {
+    let mut manifests_by_id: HashMap<String, serde_json::Value> = HashMap::new();
+
+    let add_manifest = |path: &str, bucket: &mut HashMap<String, serde_json::Value>| {
+        if let Some(raw) = read_container_file(path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let id = value
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .trim();
+                if !id.is_empty() && !bucket.contains_key(id) {
+                    bucket.insert(id.to_string(), value);
+                }
+            }
+        }
+    };
+
     let list = docker_exec_output(&[
         "exec",
         OPENCLAW_CONTAINER,
@@ -2225,20 +2397,49 @@ fn list_extension_manifests() -> Result<Vec<serde_json::Value>, String> {
         "-c",
         "ls -1 /app/extensions 2>/dev/null || true",
     ])?;
-    let mut manifests = Vec::new();
     for line in list.lines() {
         let dir = line.trim();
         if dir.is_empty() {
             continue;
         }
         let path = format!("/app/extensions/{}/openclaw.plugin.json", dir);
-        if let Some(raw) = read_container_file(&path) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                manifests.push(val);
+        add_manifest(&path, &mut manifests_by_id);
+    }
+
+    if let Some(skills_root) = read_container_env("NOVA_SKILLS_PATH") {
+        let normalized_root = skills_root.trim_end_matches('/');
+        for skill_id in collect_skill_ids()? {
+            let candidate = resolve_installed_skill_dir(&skill_id)?;
+            let skill_dir = if let Some(path) = candidate {
+                if path.starts_with(normalized_root) {
+                    Some(path)
+                } else {
+                    let fallback = format!("{}/{}", normalized_root, skill_id);
+                    if container_dir_exists(&fallback)? {
+                        Some(fallback)
+                    } else {
+                        None
+                    }
+                }
+            } else {
+                let fallback = format!("{}/{}", normalized_root, skill_id);
+                if container_dir_exists(&fallback)? {
+                    Some(fallback)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(path) = skill_dir {
+                add_manifest(
+                    &format!("{}/openclaw.plugin.json", path),
+                    &mut manifests_by_id,
+                );
             }
         }
     }
-    Ok(manifests)
+
+    Ok(manifests_by_id.into_values().collect())
 }
 
 fn config_allows_plugin(cfg: &serde_json::Value, id: &str) -> bool {
@@ -2319,6 +2520,11 @@ fn current_millis() -> u128 {
 
 fn apply_agent_settings(app: &AppHandle, state: &AppState) -> Result<(), String> {
     let settings = load_agent_settings(app);
+    let installed_skill_paths = collect_workspace_skill_paths().unwrap_or_default();
+    let installed_workspace_skill_ids: Vec<String> = installed_skill_paths
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .collect();
     let proxy_mode = read_container_env("NOVA_PROXY_MODE").is_some();
     let base_url = read_container_env("NOVA_PROXY_BASE_URL");
     let model = read_container_env("OPENCLAW_MODEL");
@@ -2390,6 +2596,7 @@ Use it for durable decisions, preferences, and facts that should persist across 
         "web_base_url": &web_base_url,
         "openai_key_for_lancedb": &openai_key_for_lancedb,
         "thinking_level": &thinking_level_env,
+        "installed_workspace_skills": &installed_workspace_skill_ids,
         "settings": &settings,
         "heartbeat_body": &hb_body,
         "tools_body": &tools_body,
@@ -2590,6 +2797,28 @@ Use it for durable decisions, preferences, and facts that should persist across 
     const NOVA_X_TOOLS: [&str; 4] = ["x_search", "x_profile", "x_thread", "x_user_tweets"];
     const NOVA_CORE_TOOLS: [&str; 1] = ["image"];
 
+    let workspace_plugin_paths: Vec<String> = installed_skill_paths
+        .iter()
+        .filter(|(id, _)| !MANAGED_PLUGIN_IDS.contains(&id.as_str()))
+        .map(|(_, path)| path.to_string())
+        .collect();
+
+    let mut workspace_skill_ids: Vec<String> = installed_skill_paths
+        .iter()
+        .map(|(id, _)| id.to_string())
+        .filter(|id| !MANAGED_PLUGIN_IDS.contains(&id.as_str()))
+        .collect();
+    workspace_skill_ids.sort();
+    workspace_skill_ids.dedup();
+
+    for skill_id in &workspace_skill_ids {
+        set_openclaw_config_value(
+            &mut cfg,
+            &["plugins", "entries", skill_id.as_str(), "enabled"],
+            serde_json::json!(true),
+        );
+    }
+
     // Enable nova-x plugin if it exists (bundled or mounted).
     let mut has_nova_x = container_path_exists("/app/extensions/nova-x");
     let mut nova_x_path: Option<String> = None;
@@ -2630,6 +2859,24 @@ Use it for durable decisions, preferences, and facts that should persist across 
             }
         }
     }
+
+    let load_paths = cfg
+        .pointer_mut("/plugins/load/paths")
+        .and_then(|v| v.as_array_mut());
+    if let Some(list) = load_paths {
+        for path in &workspace_plugin_paths {
+            if !list.iter().any(|v| v.as_str() == Some(path.as_str())) {
+                list.push(serde_json::json!(path));
+            }
+        }
+    } else if !workspace_plugin_paths.is_empty() {
+        set_openclaw_config_value(
+            &mut cfg,
+            &["plugins", "load", "paths"],
+            serde_json::json!(workspace_plugin_paths),
+        );
+    }
+
     if let Some(tools) = cfg["tools"].as_object_mut() {
         let allow_entry = tools.entry("alsoAllow").or_insert(serde_json::json!([]));
         if !allow_entry.is_array() {
@@ -4897,7 +5144,14 @@ pub async fn start_gateway_with_proxy(
             );
             let health_started = Instant::now();
             let (reuse_docker_args, _reuse_env_file) = build_proxy_docker_args()?;
-            recover_gateway_health(&local_gateway_token, &reuse_docker_args, "Proxy gateway", &app, &state).await?;
+            recover_gateway_health(
+                &local_gateway_token,
+                &reuse_docker_args,
+                "Proxy gateway",
+                &app,
+                &state,
+            )
+            .await?;
             println!(
                 "[Nova] Startup timing (proxy): health={}ms total={}ms",
                 health_started.elapsed().as_millis(),
@@ -5013,7 +5267,14 @@ pub async fn start_gateway_with_proxy(
     );
 
     let health_started = Instant::now();
-    recover_gateway_health(&local_gateway_token, &docker_args, "Proxy gateway", &app, &state).await?;
+    recover_gateway_health(
+        &local_gateway_token,
+        &docker_args,
+        "Proxy gateway",
+        &app,
+        &state,
+    )
+    .await?;
     start_scanner_sidecar_background();
     println!(
         "[Nova] Startup timing (proxy): health={}ms total={}ms",
@@ -6153,6 +6414,7 @@ pub async fn get_skill_store() -> Result<Vec<SkillInfo>, String> {
             description: description.unwrap_or_else(|| "Workspace skill".to_string()),
             path: full_path,
             source: "User Skills".to_string(),
+            scan: read_skill_scan_from_manifest(&id),
         });
     }
 
@@ -6219,14 +6481,31 @@ pub async fn get_clawhub_catalog(
         _ => "trending".to_string(),
     };
 
-    let raw = clawhub_exec_output(&[
+    let raw = match clawhub_exec_output(&[
         "explore",
         "--json",
         "--limit",
         fetch_limit_str.as_str(),
         "--sort",
         normalized_sort.as_str(),
-    ])?;
+    ]) {
+        Ok(r) => r,
+        Err(e) => {
+            if e.to_lowercase().contains("rate limit") {
+                let cache = CLAWHUB_CATALOG_CACHE
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .unwrap();
+                if let Some((cached, ts)) = cache.as_ref() {
+                    if ts.elapsed() < Duration::from_secs(300) {
+                        return Ok(cached.clone());
+                    }
+                }
+                return Ok(featured_clawhub_skills());
+            }
+            return Err(e);
+        }
+    };
     let payload: serde_json::Value = parse_clawhub_json(&raw)?;
     let items = payload
         .get("items")
@@ -6300,12 +6579,23 @@ pub async fn get_clawhub_catalog(
             installs_all_time,
             stars,
             updated_at,
+            is_fallback: false,
         });
     }
 
     if out.len() > max_results as usize {
         out.truncate(max_results as usize);
     }
+
+    // Cache successful results for rate-limit fallback
+    {
+        let mut cache = CLAWHUB_CATALOG_CACHE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap();
+        *cache = Some((out.clone(), Instant::now()));
+    }
+
     Ok(out)
 }
 
@@ -6681,6 +6971,7 @@ pub async fn scan_and_install_clawhub_skill(
         "version": manifest_version,
         "installed_at_ms": current_millis(),
         "path": manifest_path_value,
+        "scan_id": scan.scan_id,
         "integrity": {
             "sha256_tree": tree_hash,
             "signature": serde_json::Value::Null
