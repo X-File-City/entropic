@@ -139,6 +139,12 @@ export function Settings({
     invoke<{ providers: Array<{ id: string; has_key: boolean; last4?: string | null }> }>("get_auth_state").then(setAuthState).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!experimentalDesktop) {
+      setWallpaperPickerOpen(false);
+    }
+  }, [experimentalDesktop]);
+
   async function saveWallpaper(id: string, custom?: string | null) {
     setWallpaperId(id);
     if (custom !== undefined) setCustomWallpaper(custom);
@@ -376,49 +382,30 @@ export function Settings({
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title="Appearance">
-        <SettingsRow 
-          label="Desktop Wallpaper" 
-          icon={Palette} 
-          description="Customize the background"
-          onClick={() => setWallpaperPickerOpen(true)}
-        >
-          <div className="flex items-center gap-2">
-            <div className="w-24 h-[72px] rounded-md bg-[var(--system-gray-5)] border border-[var(--border-subtle)] overflow-hidden shadow-sm">
-              {(() => {
-                const wp = getWallpaperById(wallpaperId);
-                const isPhoto = (wallpaperId === "custom" && customWallpaper) || wp?.type === "photo";
-                const css = wallpaperId === "custom" && customWallpaper
-                  ? `url(${customWallpaper})`
-                  : wp?.css || WALLPAPERS[0].css;
-                return <div className="w-full h-full" style={isPhoto ? { backgroundImage: css, backgroundSize: "cover" } : { background: css }} />;
-              })()}
-            </div>
-            <ChevronRight className="w-4 h-4 text-[var(--text-tertiary)]" />
-          </div>
-        </SettingsRow>
-        <SettingsRow
-          label="Enable experimental desktop"
-          icon={Sparkles}
-          description='Show "Desktop" in navigation'
-        >
-          <button
-            onClick={() => onExperimentalDesktopChange(!experimentalDesktop)}
-            className={clsx(
-              "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
-              experimentalDesktop ? "bg-[var(--system-blue)]" : "bg-[var(--system-gray-4)]"
-            )}
-            aria-label="Enable experimental desktop"
+      {experimentalDesktop && (
+        <SettingsGroup title="Appearance">
+          <SettingsRow 
+            label="Desktop Wallpaper" 
+            icon={Palette} 
+            description="Customize the background"
+            onClick={() => setWallpaperPickerOpen(true)}
           >
-            <span
-              className={clsx(
-                "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
-                experimentalDesktop ? "translate-x-5" : "translate-x-0"
-              )}
-            />
-          </button>
-        </SettingsRow>
-      </SettingsGroup>
+            <div className="flex items-center gap-2">
+              <div className="w-24 h-[72px] rounded-md bg-[var(--system-gray-5)] border border-[var(--border-subtle)] overflow-hidden shadow-sm">
+                {(() => {
+                  const wp = getWallpaperById(wallpaperId);
+                  const isPhoto = (wallpaperId === "custom" && customWallpaper) || wp?.type === "photo";
+                  const css = wallpaperId === "custom" && customWallpaper
+                    ? `url(${customWallpaper})`
+                    : wp?.css || WALLPAPERS[0].css;
+                  return <div className="w-full h-full" style={isPhoto ? { backgroundImage: css, backgroundSize: "cover" } : { background: css }} />;
+                })()}
+              </div>
+              <ChevronRight className="w-4 h-4 text-[var(--text-tertiary)]" />
+            </div>
+          </SettingsRow>
+        </SettingsGroup>
+      )}
 
       <SettingsGroup title="System">
         <SettingsRow label="Gateway Status" icon={Shield} description={gatewayRunning ? "Running on localhost:19789" : "Secure sandbox stopped"}>
@@ -498,6 +485,27 @@ export function Settings({
       </div>
 
       <SettingsGroup title="Keys">
+        <SettingsRow
+          label="Enable experimental desktop"
+          icon={Sparkles}
+          description='Show "Desktop" in navigation'
+        >
+          <button
+            onClick={() => onExperimentalDesktopChange(!experimentalDesktop)}
+            className={clsx(
+              "relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+              experimentalDesktop ? "bg-[var(--system-blue)]" : "bg-[var(--system-gray-4)]"
+            )}
+            aria-label="Enable experimental desktop"
+          >
+            <span
+              className={clsx(
+                "pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                experimentalDesktop ? "translate-x-5" : "translate-x-0"
+              )}
+            />
+          </button>
+        </SettingsRow>
         <SettingsRow
           label="Use Local Keys"
           icon={Key}
