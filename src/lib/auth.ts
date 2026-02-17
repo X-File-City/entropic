@@ -7,7 +7,8 @@ import { platform } from "@tauri-apps/plugin-os";
 // These should be set via environment variables
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || "";
-const API_URL = (import.meta as any).env?.VITE_API_URL || "";
+const RAW_API_URL = (import.meta as any).env?.VITE_API_URL || "";
+const API_URL = RAW_API_URL || ((import.meta as any).env?.DEV ? "/api" : "");
 const AUTH_REDIRECT_URL =
   (import.meta as any).env?.VITE_AUTH_REDIRECT_URL || "nova://auth/callback";
 const AUTH_STORE_NAME =
@@ -25,6 +26,12 @@ function authDebug(message: string, data?: Record<string, unknown>) {
   if (data) console.log(`[auth] ${message}`, data);
   else console.log(`[auth] ${message}`);
 }
+
+authDebug("config", {
+  apiUrl: API_URL || "(empty)",
+  supabaseConfigured: Boolean(SUPABASE_URL && SUPABASE_ANON_KEY),
+  authStore: AUTH_STORE_NAME,
+});
 
 function redactToken(token?: string | null) {
   if (!token) return null;
