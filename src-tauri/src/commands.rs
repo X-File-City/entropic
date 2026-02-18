@@ -4570,7 +4570,12 @@ fn append_colima_runtime_hint(message: String) -> String {
 }
 
 fn finish_health_wait_or_tolerate_starting(err: String, context: &str) -> Result<(), String> {
-    if err.contains("container health=starting") {
+    // Tolerate normal startup transients: container still warming up, or WS not ready yet
+    if err.contains("container health=starting")
+        || err.contains("Handshake not finished")
+        || err.contains("WebSocket connect failed")
+        || err.contains("WebSocket protocol error")
+    {
         println!(
             "[Nova] {}: {} (continuing; container still warming up)",
             context, err

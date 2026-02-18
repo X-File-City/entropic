@@ -120,6 +120,7 @@ export function SetupScreen({ onComplete }: Props) {
     }
   }, [isRunning, onComplete]);
 
+  // Rotate educational facts during setup
   useEffect(() => {
     if (!isRunning || !progress || progress.complete || progress.error) {
       return;
@@ -129,6 +130,13 @@ export function SetupScreen({ onComplete }: Props) {
     }, 5000);
     return () => window.clearInterval(interval);
   }, [isRunning, progress]);
+
+  // Auto-start setup on component mount
+  useEffect(() => {
+    if (!isRunning && !progress) {
+      startSetup(false);
+    }
+  }, []);
 
   async function startSetup(withCleanup = false) {
     setCopyStatus("idle");
