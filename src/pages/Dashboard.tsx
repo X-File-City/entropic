@@ -78,6 +78,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const [localCreditBalanceCents, setLocalCreditBalanceCents] = useState<number | null>(null);
   const gatewayTokenRef = useRef<string | null>(null);
   const autoStartAttemptedRef = useRef(false);
+  const lastAuthStateRef = useRef<boolean | null>(null);
   const startGatewayAttemptRef = useRef(0);
   const startGatewayInFlightRef = useRef(false);
   const retryAttemptRef = useRef(0);
@@ -729,6 +730,46 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     isTogglingGateway,
     selectedModel,
     gatewayRetryIn,
+    imageModel,
+  ]);
+
+  // When auth state changes (anonymous <-> signed-in), rotate gateway token so
+  // the running container does not keep using a stale token from the prior mode.
+  useEffect(() => {
+    const previous = lastAuthStateRef.current;
+    if (previous === null) {
+      lastAuthStateRef.current = isAuthenticated;
+      return;
+    }
+
+    if (previous === isAuthenticated) {
+      return;
+    }
+
+    lastAuthStateRef.current = isAuthenticated;
+    autoStartAttemptedRef.current = false;
+
+    const proxyModeSelected = isAuthConfigured && !useLocalKeys;
+    if (!proxyModeSelected || !gatewayRunning || isTogglingGateway) {
+      return;
+    }
+
+    setIsTogglingGateway(true);
+    void startGatewayProxyFlow({
+      model: selectedModel,
+      image: imageModel,
+      stopFirst: false,
+      allowRetry: true,
+    }).finally(() => {
+      setIsTogglingGateway(false);
+    });
+  }, [
+    isAuthenticated,
+    isAuthConfigured,
+    useLocalKeys,
+    gatewayRunning,
+    isTogglingGateway,
+    selectedModel,
     imageModel,
   ]);
 
