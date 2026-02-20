@@ -5800,6 +5800,7 @@ async fn handle_bridge_http_connection(mut socket: tokio::net::TcpStream, app: A
                                 clear_legacy_messaging_settings(&mut settings);
                                 let _ = save_agent_settings(&app, settings.clone());
                                 let mut cfg = read_openclaw_config();
+                                normalize_openclaw_config(&mut cfg);
                                 disable_legacy_messaging_config(&mut cfg);
                                 let _ = write_openclaw_config(&cfg);
                                 let ws_host = if settings.bridge_tailnet_ip.trim().is_empty() {
@@ -7296,6 +7297,7 @@ pub fn update_gateway_model(model: String) -> Result<(), String> {
     };
 
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     set_openclaw_config_value(
         &mut cfg,
         &["agents", "defaults", "model", "primary"],
@@ -7771,6 +7773,7 @@ pub async fn set_heartbeat(
     tasks: Vec<String>,
 ) -> Result<(), String> {
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     set_openclaw_config_value(
         &mut cfg,
         &["agents", "defaults", "heartbeat"],
@@ -7807,6 +7810,7 @@ pub async fn set_memory(
 ) -> Result<(), String> {
     let mut settings = load_agent_settings(&app);
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     let slot = if !memory_enabled {
         "none"
     } else if long_term {
@@ -7868,6 +7872,7 @@ pub async fn set_memory(
 pub async fn set_memory_qmd_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = load_agent_settings(&app);
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     let slot = cfg
         .get("plugins")
         .and_then(|plugins| plugins.get("slots"))
@@ -7901,6 +7906,7 @@ pub async fn set_memory_qmd_enabled(app: AppHandle, enabled: bool) -> Result<(),
 pub async fn set_memory_session_indexing(app: AppHandle, enabled: bool) -> Result<(), String> {
     let mut settings = load_agent_settings(&app);
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     let slot = cfg
         .get("plugins")
         .and_then(|plugins| plugins.get("slots"))
@@ -7969,6 +7975,7 @@ pub async fn set_imessage_config(
     include_attachments: bool,
 ) -> Result<(), String> {
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     let cli = cli_path.trim();
     let db = db_path.trim();
     let remote = remote_host.trim();
@@ -8069,7 +8076,8 @@ pub async fn set_channels_config(
     );
 
     let mut cfg = read_openclaw_config();
-    eprintln!("[set_channels_config] OpenClaw config read successfully");
+    normalize_openclaw_config(&mut cfg);
+    eprintln!("[set_channels_config] OpenClaw config read and normalized successfully");
 
     let discord_token = discord_token.trim().to_string();
     let telegram_token = telegram_token.trim().to_string();
@@ -8954,6 +8962,7 @@ pub async fn set_plugin_enabled(id: String, enabled: bool) -> Result<(), String>
         return Err("Plugin is managed by Entropic".to_string());
     }
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     set_openclaw_config_value(
         &mut cfg,
         &["plugins", "entries", &id, "enabled"],
@@ -9033,6 +9042,7 @@ pub async fn remove_workspace_skill(id: String) -> Result<(), String> {
     }
 
     let mut cfg = read_openclaw_config();
+    normalize_openclaw_config(&mut cfg);
     let mut config_updated = false;
     if cfg
         .pointer(&format!("/plugins/entries/{}", skill_id))
