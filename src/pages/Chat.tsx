@@ -1174,6 +1174,7 @@ export function Chat({
   const gatewaySessionKeysRef = useRef<Set<string>>(new Set());
   const visibleMessagesSessionRef = useRef<string | null>(null);
   const builderSessionsRef = useRef<Set<string>>(new Set());
+  const avatarUploadDataUrlByFileNameRef = useRef<Map<string, string>>(new Map());
   const integrationSetup = currentSession ? integrationSetupBySession[currentSession] || null : null;
   const quickSuggestion = currentSession ? quickSuggestionBySession[currentSession] || null : null;
 
@@ -1212,6 +1213,10 @@ export function Chat({
   function stripDataUrlPrefix(value: string): string {
     const match = /^data:[^;]+;base64,(.*)$/i.exec(value);
     return match ? match[1] : value;
+  }
+
+  function normalizeAttachmentFileName(name: string): string {
+    return name.trim().toLowerCase();
   }
 
   function readFileAsDataUrl(file: File): Promise<string> {
@@ -1268,6 +1273,16 @@ export function Chat({
           content: base64,
           previewUrl: dataUrl,
         });
+        const key = normalizeAttachmentFileName(file.name);
+        if (key) {
+          avatarUploadDataUrlByFileNameRef.current.set(key, dataUrl);
+          if (avatarUploadDataUrlByFileNameRef.current.size > 128) {
+            const firstKey = avatarUploadDataUrlByFileNameRef.current.keys().next().value as
+              | string
+              | undefined;
+            if (firstKey) avatarUploadDataUrlByFileNameRef.current.delete(firstKey);
+          }
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : `Failed to attach ${file.name}.`);
       }
@@ -2700,11 +2715,21 @@ export function Chat({
       mimeType: attachment.mimeType,
       content: attachment.content,
     }));
-    const userVisibleContent =
-      messageContent ||
-      (pendingAttachments.length === 1
+    const hasAttachments = attachmentsPayload.length > 0;
+    const attachmentLine =
+      pendingAttachments.length === 1
         ? `[Attached image: ${pendingAttachments[0]?.fileName || "image"}]`
-        : `[Attached ${pendingAttachments.length} images]`);
+        : `[Attached ${pendingAttachments.length} images]`;
+    const userVisibleContent = hasAttachments
+      ? messageContent
+        ? `${messageContent}\n\n${attachmentLine}`
+        : attachmentLine
+      : messageContent;
+    const outboundMessageContent = hasAttachments
+      ? messageContent
+        ? `${messageContent}\n\nAttached image context: ${pendingAttachments.map((attachment) => attachment.fileName || "image").join(", ")}`
+        : `Attached image context: ${pendingAttachments.map((attachment) => attachment.fileName || "image").join(", ")}`
+      : messageContent;
     const liveClient = clientRef.current;
     if (!liveClient || !liveClient.isConnected()) {
       if (!connectInFlightRef.current) {
@@ -2790,8 +2815,10 @@ export function Chat({
           (err: unknown) => addDiag(`integrations sync failed: ${String(err)}`),
         );
       }
-      addDiag(`send -> session=${sendSession} len=${messageContent.length}`);
-      const runId = await liveClient.sendMessage(sendSession, messageContent, attachmentsPayload);
+      addDiag(
+        `send -> session=${sendSession} len=${outboundMessageContent.length} attachments=${attachmentsPayload.length}`
+      );
+      const runId = await liveClient.sendMessage(sendSession, outboundMessageContent, attachmentsPayload);
       if (!runId) {
         throw new Error("Failed to start response stream");
       }
@@ -2877,6 +2904,24 @@ export function Chat({
     return action.message.split("<Your Name>").join(userName);
   }
 
+  function resolveProfileAvatarDataUrl(
+    rawIdentityAvatar: string | null | undefined,
+    currentAvatar?: string
+  ): string | undefined {
+    const raw = typeof rawIdentityAvatar === "string" ? rawIdentityAvatar.trim() : "";
+    if (!raw) {
+      return currentAvatar;
+    }
+    if (/^data:image\//i.test(raw)) {
+      return raw;
+    }
+    if (/^https?:\/\//i.test(raw)) {
+      return raw;
+    }
+    const mapped = avatarUploadDataUrlByFileNameRef.current.get(normalizeAttachmentFileName(raw));
+    return mapped || currentAvatar;
+  }
+
   async function syncDesktopProfileFromIdentity() {
     try {
       const state = await invoke<{
@@ -2888,10 +2933,7 @@ export function Chat({
         typeof state.identity_name === "string" && state.identity_name.trim()
           ? state.identity_name.trim()
           : current.name;
-      const nextAvatar =
-        typeof state.identity_avatar === "string" && state.identity_avatar.trim()
-          ? state.identity_avatar.trim()
-          : undefined;
+      const nextAvatar = resolveProfileAvatarDataUrl(state.identity_avatar, current.avatarDataUrl);
       if (nextName === current.name && nextAvatar === current.avatarDataUrl) {
         return;
       }

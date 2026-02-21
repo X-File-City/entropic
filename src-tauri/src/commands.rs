@@ -2471,17 +2471,110 @@ fn workspace_file(path: &str) -> String {
     }
 }
 
-fn parse_markdown_bold_field(content: &str, field: &str) -> Option<String> {
-    let prefix = format!("- **{}:**", field);
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            let value = rest.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
+fn normalize_markdown_field_label(raw: &str) -> String {
+    let mut value = raw.trim();
+    if let Some(inner) = value.strip_prefix("**").and_then(|s| s.strip_suffix("**")) {
+        value = inner.trim();
+    }
+    value.trim_matches('*').trim().to_ascii_lowercase()
+}
+
+fn parse_inline_markdown_field_value(line: &str, field: &str) -> Option<String> {
+    let stripped = line
+        .strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .or_else(|| line.strip_prefix("+ "))
+        .unwrap_or(line)
+        .trim();
+    if stripped.is_empty() {
+        return None;
+    }
+    if let Some((label, value)) = stripped.split_once(':') {
+        if normalize_markdown_field_label(label).eq_ignore_ascii_case(field) {
+            let parsed = value.trim();
+            if !parsed.is_empty() {
+                return Some(parsed.to_string());
             }
         }
     }
+    if let Some((label, value)) = stripped.split_once(" - ") {
+        if normalize_markdown_field_label(label).eq_ignore_ascii_case(field) {
+            let parsed = value.trim();
+            if !parsed.is_empty() {
+                return Some(parsed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_identity_field_name(label: &str) -> bool {
+    matches!(
+        normalize_markdown_field_label(label).as_str(),
+        "name" | "creature" | "vibe" | "emoji" | "avatar"
+    )
+}
+
+fn parse_markdown_bold_field(content: &str, field: &str) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let target = field.trim().to_ascii_lowercase();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(value) = parse_inline_markdown_field_value(trimmed, &target) {
+            return Some(value);
+        }
+
+        let heading_label = trimmed.trim_start_matches('#').trim();
+        let list_label = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
+            .unwrap_or(trimmed)
+            .trim();
+        let heading_matches = !heading_label.is_empty()
+            && normalize_markdown_field_label(heading_label) == target;
+        let list_matches = !list_label.is_empty() && normalize_markdown_field_label(list_label) == target;
+        if !heading_matches && !list_matches {
+            continue;
+        }
+
+        for next in lines.iter().skip(idx + 1) {
+            let next_trimmed = next.trim();
+            if next_trimmed.is_empty() {
+                continue;
+            }
+            if next_trimmed.starts_with('#') {
+                break;
+            }
+            if let Some((label, _)) = next_trimmed
+                .strip_prefix("- ")
+                .or_else(|| next_trimmed.strip_prefix("* "))
+                .or_else(|| next_trimmed.strip_prefix("+ "))
+                .unwrap_or(next_trimmed)
+                .split_once(':')
+            {
+                if is_identity_field_name(label) {
+                    break;
+                }
+            }
+
+            let candidate = next_trimmed
+                .strip_prefix("- ")
+                .or_else(|| next_trimmed.strip_prefix("* "))
+                .or_else(|| next_trimmed.strip_prefix("+ "))
+                .unwrap_or(next_trimmed)
+                .trim();
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+
     None
 }
 

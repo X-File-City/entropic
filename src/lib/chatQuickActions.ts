@@ -100,13 +100,13 @@ Then propose concise drafts:
    - ## Vibe
    - ## Continuity
    - ## Working Preferences
-2) IDENTITY.md with:
-   - # IDENTITY.md - Who Am I?
-   - Name
-   - Creature
-   - Vibe
-   - Emoji
-   - Avatar
+2) IDENTITY.md using this exact structure:
+   # IDENTITY.md - Who Am I?
+   - **Name:** <value>
+   - **Creature:** <value>
+   - **Vibe:** <value>
+   - **Emoji:** <value>
+   - **Avatar:** <value or blank>
 3) HEARTBEAT.md:
    - keep empty/comments-only if no recurring checks desired
    - otherwise add a short high-signal recurring checklist
