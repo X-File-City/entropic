@@ -15,7 +15,7 @@ import {
 import { useAuth } from "../contexts/AuthContext";
 import { ModelSelector } from "../components/ModelSelector";
 import { WALLPAPERS, DEFAULT_WALLPAPER_ID, getWallpaperById } from "../lib/wallpapers";
-import { getProxyUrl } from "../lib/auth";
+import { getProxyUrl, signOut as authSignOut } from "../lib/auth";
 import { Logs } from "./Logs";
 import {
   clearDiagnosticLogs,
@@ -1339,11 +1339,16 @@ export function Settings({
                       const result = await invoke<string>("cleanup_app_data", { includeVms: true });
                       console.log("[Settings] Cleanup succeeded:", result);
 
-                      // Also clear auth settings for complete uninstall
-                      console.log("[Settings] Clearing auth settings...");
-                      const store = await Store.load("auth.json");
-                      await store.clear();
-                      await store.save();
+                      // Sign out of Supabase and clear all Tauri stores
+                      console.log("[Settings] Signing out and clearing auth...");
+                      try { await authSignOut(); } catch (e) { console.warn("[Settings] signOut failed:", e); }
+                      for (const storeName of ["entropic-auth.json", "entropic-settings.json", "entropic-chat-history.json", "auth.json"]) {
+                        try {
+                          const s = await Store.load(storeName);
+                          await s.clear();
+                          await s.save();
+                        } catch (e) { console.warn(`[Settings] Failed to clear ${storeName}:`, e); }
+                      }
 
                       alert("Uninstall cleanup completed!\n\n" + result + "\n\nThe app will now quit. You can move Entropic to trash.");
 
