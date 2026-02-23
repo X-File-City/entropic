@@ -4041,6 +4041,16 @@ fn write_openclaw_config(value: &serde_json::Value) -> Result<(), String> {
     write_container_file(&config_path, &payload)
 }
 
+/// Send SIGUSR1 to the gateway process to force a config reload.
+/// The gateway watches openclaw.json for changes but may miss writes that
+/// happen before the file watcher is initialised (e.g. during startup).
+/// This is a no-op if the container isn't running.
+fn signal_gateway_config_reload() {
+    let _ = docker_command()
+        .args(["exec", OPENCLAW_CONTAINER, "kill", "-USR1", "1"])
+        .output();
+}
+
 fn set_openclaw_config_value(cfg: &mut serde_json::Value, path: &[&str], value: serde_json::Value) {
     if path.is_empty() {
         return;
@@ -7665,6 +7675,12 @@ pub async fn start_gateway(
     // and config fields like thinkingDefault). Re-applying now ensures our settings stick.
     clear_applied_agent_settings_fingerprint()?;
     apply_agent_settings(&app, &state)?;
+    // The first apply_agent_settings (before health check) may have written the
+    // config before the gateway's file watcher was active.  The dedup in
+    // write_openclaw_config means the second call above likely skipped writing
+    // (same content).  Send SIGUSR1 to guarantee the gateway re-reads the
+    // on-disk config so plugins like Telegram initialise correctly.
+    signal_gateway_config_reload();
     println!("[Entropic] Startup timing: post_health_config applied");
     println!(
         "[Entropic] Startup timing: health={}ms total={}ms",
@@ -8005,6 +8021,7 @@ pub async fn start_gateway_with_proxy(
     // (including openclaw.json provider baseUrl), so apply again once healthy.
     clear_applied_agent_settings_fingerprint()?;
     apply_agent_settings(&app, &state)?;
+    signal_gateway_config_reload();
     println!("[Entropic] Startup timing (proxy): post_health_config applied");
     println!(
         "[Entropic] Startup timing (proxy): health={}ms total={}ms",
@@ -8900,11 +8917,21 @@ pub async fn set_channels_config(
     save_agent_settings(&app, settings)?;
     eprintln!("[set_channels_config] Agent settings saved successfully");
 
-    // Config is written to container. Changes will take effect on next gateway restart.
-    // We don't auto-restart here because:
-    // - In proxy mode, restart_gateway requires local keys which won't exist
-    // - The user can manually restart via Dashboard or the app will auto-restart on next launch
-    eprintln!("[set_channels_config] Channel config saved. Restart gateway to apply changes.");
+    // The config write triggers the gateway's file watcher which sends SIGUSR1,
+    // causing a brief internal restart. Wait for the gateway to come back healthy
+    // so the frontend doesn't see a jarring disconnect/error cycle.
+    if container_running() {
+        let _ = app.emit("gateway-restarting", ());
+        if let Ok(token) = effective_gateway_token(&app) {
+            eprintln!("[set_channels_config] Waiting for gateway to recover after config write...");
+            // Give the file watcher a moment to detect the change and trigger SIGUSR1
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            match wait_for_gateway_health_strict(&token, 12).await {
+                Ok(()) => eprintln!("[set_channels_config] Gateway healthy after config update"),
+                Err(e) => eprintln!("[set_channels_config] Gateway health wait timed out (non-fatal): {}", e),
+            }
+        }
+    }
 
     eprintln!("[set_channels_config] Completed successfully");
     Ok(())
@@ -9182,6 +9209,23 @@ pub async fn restart_gateway_in_place(
     // correct configuration.
     clear_applied_agent_settings_fingerprint()?;
     apply_agent_settings(&app, &state)?;
+    // Ensure the gateway picks up the config even if the file watcher missed
+    // the write (it may not be active yet right after a container restart).
+    signal_gateway_config_reload();
+
+    // The config written by apply_agent_settings differs from the entrypoint's
+    // initial config (it adds channels, telegram, allowedOrigins, etc.), which
+    // triggers the gateway's file watcher → SIGUSR1 → brief internal restart.
+    // Wait for the gateway to come back healthy so callers (and the frontend)
+    // don't see a jarring disconnect/error when navigating back to chat.
+    if let Ok(token) = effective_gateway_token(&app) {
+        eprintln!("[Entropic] restart_gateway_in_place: waiting for gateway health after config apply...");
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        match wait_for_gateway_health_strict(&token, 20).await {
+            Ok(()) => eprintln!("[Entropic] restart_gateway_in_place: gateway healthy"),
+            Err(e) => eprintln!("[Entropic] restart_gateway_in_place: health wait timed out (non-fatal): {}", e),
+        }
+    }
 
     Ok(())
 }

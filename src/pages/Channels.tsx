@@ -184,21 +184,6 @@ export function Channels() {
         setTelegramReplyToMode(replyToMode);
         setTelegramLinkPreview(linkPreview);
         setTelegramTokenSaved(Boolean(telegramTokenLoaded.trim()));
-
-        // Auto-configure runtime if Telegram is enabled with a token.
-        if (telegramEnabledLoaded && telegramTokenLoaded.trim()) {
-          console.log("[Channels] Auto-configuring Telegram on startup");
-          void autoConfigureTelegram({
-            enabled: telegramEnabledLoaded,
-            token: telegramTokenLoaded,
-            dmPolicy,
-            groupPolicy,
-            configWrites,
-            requireMention,
-            replyToMode,
-            linkPreview,
-          });
-        }
       } catch {
         // Keep defaults; still transition out of loading.
       } finally {
@@ -515,6 +500,11 @@ export function Channels() {
                   />
                 </div>
                 <p className="text-sm text-[var(--text-secondary)]">Connect your Telegram bot to enable messaging with Joulie.</p>
+                {telegramTokenSaved && (
+                  <p className="text-xs text-[var(--text-tertiary)] mt-1">
+                    If Telegram is not responding, try clicking "Save Bot Token" to reconnect.
+                  </p>
+                )}
               </div>
 
               <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
