@@ -145,7 +145,7 @@ export function Settings({
   onImageModelChange,
 }: Props) {
   console.log("[Settings] Component rendering");
-  const { isAuthenticated, isAuthConfigured } = useAuth();
+  const { isAuthenticated, isAuthConfigured, user, signOut } = useAuth();
   const proxyEnabled = isAuthConfigured && isAuthenticated && !useLocalKeys;
   const [apiKeys, setApiKeys] = useState({ anthropic: "", openai: "", google: "" });
   const [profile, setProfile] = useState<AgentProfile>({ name: "Entropic" });
@@ -688,6 +688,24 @@ export function Settings({
             </div>
           </div>
         </div>
+        {isAuthenticated && (
+          <div className="px-4 pb-4 pt-0 border-t border-[var(--border-subtle)] mt-0">
+            <div className="flex items-center justify-between pt-3">
+              <span className="text-[12px] text-[var(--text-secondary)]">
+                {user?.email ?? "Signed in"}
+              </span>
+              <button
+                onClick={async () => {
+                  try { await signOut(); } catch (e) { console.warn("[Settings] signOut failed:", e); }
+                }}
+                className="flex items-center gap-1.5 text-[12px] font-medium text-red-500 hover:text-red-600 transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign Out
+              </button>
+            </div>
+          </div>
+        )}
       </SettingsGroup>
 
       {experimentalDesktop && (

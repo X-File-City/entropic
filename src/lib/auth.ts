@@ -9,7 +9,7 @@ import { getDeviceFingerprintHash } from "./localCredits";
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || "";
 const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || "";
 const RAW_API_URL = (import.meta as any).env?.VITE_API_URL || "";
-const API_URL = RAW_API_URL || ((import.meta as any).env?.DEV ? "/api" : "");
+export const API_URL = RAW_API_URL || ((import.meta as any).env?.DEV ? "/api" : "");
 const AUTH_REDIRECT_URL =
   (import.meta as any).env?.VITE_AUTH_REDIRECT_URL || "entropic://auth/callback";
 const AUTH_STORE_NAME =
