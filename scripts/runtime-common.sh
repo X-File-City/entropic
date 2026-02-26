@@ -125,21 +125,28 @@ entropic_find_docker_binary() {
 
 entropic_find_colima_binary() {
     local project_root="${1:-}"
+    local candidates=()
+
     if [ -n "$project_root" ]; then
         if [ -x "$project_root/src-tauri/target/debug/resources/bin/colima" ]; then
-            printf '%s\n' "$project_root/src-tauri/target/debug/resources/bin/colima"
-            return 0
+            candidates+=("$project_root/src-tauri/target/debug/resources/bin/colima")
         fi
         if [ -x "$project_root/src-tauri/resources/bin/colima" ]; then
-            printf '%s\n' "$project_root/src-tauri/resources/bin/colima"
-            return 0
+            candidates+=("$project_root/src-tauri/resources/bin/colima")
         fi
     fi
 
     if command -v colima >/dev/null 2>&1; then
-        printf '%s\n' "$(command -v colima)"
-        return 0
+        candidates+=("$(command -v colima)")
     fi
+
+    local path
+    for path in "${candidates[@]}"; do
+        if "$path" --version >/dev/null 2>&1; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
 
     return 1
 }
