@@ -16,6 +16,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { ModelSelector } from "../components/ModelSelector";
 import { WALLPAPERS, DEFAULT_WALLPAPER_ID, getWallpaperById } from "../lib/wallpapers";
 import { getProxyUrl, signOut as authSignOut } from "../lib/auth";
+import { disconnectIntegration } from "../lib/integrations";
 import { Logs } from "./Logs";
 import {
   clearDiagnosticLogs,
@@ -1296,8 +1297,23 @@ export function Settings({
                   setResetLoading(true);
                   console.log("[Settings] Starting cleanup...");
                   try {
+                    // Disconnect X/Twitter OAuth (stored server-side in Supabase, not cleared by rm -rf)
+                    try { await disconnectIntegration("x"); } catch (e) { console.warn("[Settings] X disconnect failed:", e); }
+
                     const result = await invoke<string>("cleanup_app_data", { includeVms: true });
                     console.log("[Settings] Cleanup succeeded:", result);
+
+                    // Sign out and clear all auth/settings stores so in-memory state is also cleared
+                    console.log("[Settings] Signing out and clearing auth...");
+                    try { await authSignOut(); } catch (e) { console.warn("[Settings] signOut failed:", e); }
+                    for (const storeName of ["entropic-auth.json", "entropic-settings.json", "entropic-chat-history.json", "auth.json"]) {
+                      try {
+                        const s = await Store.load(storeName);
+                        await s.clear();
+                        await s.save();
+                      } catch (e) { console.warn(`[Settings] Failed to clear ${storeName}:`, e); }
+                    }
+
                     alert("Cleanup completed!\n\n" + result);
                   } catch (err) {
                     console.error("[Settings] Cleanup failed:", err);
@@ -1350,6 +1366,9 @@ export function Settings({
                     setUninstallLoading(true);
                     console.log("[Settings] Starting uninstall cleanup...");
                     try {
+                      // Disconnect X/Twitter OAuth (stored server-side in Supabase, not cleared by rm -rf)
+                      try { await disconnectIntegration("x"); } catch (e) { console.warn("[Settings] X disconnect failed:", e); }
+
                       const result = await invoke<string>("cleanup_app_data", { includeVms: true });
                       console.log("[Settings] Cleanup succeeded:", result);
 
