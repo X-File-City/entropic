@@ -1463,7 +1463,27 @@ fn find_local_runtime_tar() -> Option<PathBuf> {
     None
 }
 
+fn should_prefer_cached_runtime_tar() -> bool {
+    if cfg!(debug_assertions) || !runtime_cached_tar_valid() {
+        return false;
+    }
+
+    let Some(manifest) = read_cached_runtime_manifest() else {
+        return false;
+    };
+
+    let cached_version = manifest.version.trim();
+    !cached_version.is_empty() && cached_version != runtime_release_tag()
+}
+
 fn find_runtime_tar() -> Option<PathBuf> {
+    if should_prefer_cached_runtime_tar() {
+        if let Some(cached_path) = runtime_cached_tar_path() {
+            if cached_path.is_file() {
+                return Some(cached_path);
+            }
+        }
+    }
     if let Some(local_path) = find_local_runtime_tar() {
         return Some(local_path);
     }

@@ -87,6 +87,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
   const retryAttemptRef = useRef(0);
   const retryTimeoutRef = useRef<number | null>(null);
   const retryIntervalRef = useRef<number | null>(null);
+  const runtimeAutoRefreshAttemptedRef = useRef(false);
   const fullSyncRef = useRef(false);
   const [providerSwitchConfirm, setProviderSwitchConfirm] = useState<{
     oldProvider: string;
@@ -424,6 +425,35 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
     );
   }
 
+  function shouldAutoRefreshRuntime(message: string): boolean {
+    const text = message.toLowerCase();
+    return (
+      text.includes("failed to write files in container") ||
+      text.includes("failed to batch write files") ||
+      text.includes("read-only file system") ||
+      text.includes("no space left on device") ||
+      (text.includes("container") && text.includes("permission denied"))
+    );
+  }
+
+  async function tryAutoRefreshRuntime(message: string): Promise<boolean> {
+    if (runtimeAutoRefreshAttemptedRef.current || !shouldAutoRefreshRuntime(message)) {
+      return false;
+    }
+
+    runtimeAutoRefreshAttemptedRef.current = true;
+    try {
+      setStartupError({
+        message: "Refreshing sandbox runtime before retrying startup...",
+      });
+      await invoke("fetch_latest_openclaw_runtime");
+      return true;
+    } catch (error) {
+      console.warn("[Entropic] Runtime auto-refresh failed:", error);
+      return false;
+    }
+  }
+
   async function persistExperimentalDesktop(value: boolean) {
     setExperimentalDesktop(value);
     try {
@@ -582,6 +612,7 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       }
       gatewayHealthFailureStreakRef.current = 0;
       setGatewayRunning(true);
+      runtimeAutoRefreshAttemptedRef.current = false;
       clearGatewayRetry();
       setStartupError(null);
       setGatewayStartupStage("idle");
@@ -663,9 +694,17 @@ export function Dashboard({ status: _status, onRefresh: _onRefresh }: Props) {
       setStartupError({
         message,
       });
+      const refreshedRuntime = allowRetry
+        ? await tryAutoRefreshRuntime(message)
+        : false;
       if (allowRetry) {
         scheduleGatewayRetry(() => {
-          startGatewayProxyFlow({ model, image, stopFirst, allowRetry });
+          startGatewayProxyFlow({
+            model,
+            image,
+            stopFirst: refreshedRuntime ? true : stopFirst,
+            allowRetry,
+          });
         });
       } else {
         setGatewayStartupStage("idle");
