@@ -14,7 +14,7 @@
     {
       "id": "frontend-pages",
       "title": "Frontend Pages",
-      "description": "The React frontend lives in src/ and is organized around 14 page components. Chat.tsx is the main conversation interface, Dashboard.tsx is the home screen, Tasks.tsx and Jobs.tsx power the task board system, Settings.tsx handles configuration, Store.tsx is the plugin marketplace, and Channels.tsx manages integrations like WhatsApp and Telegram. The app uses React Router, Tailwind CSS, and Vite as the bundler.",
+      "description": "14 React page components built with Tailwind and Vite. Blue highlights are the core experience (Chat, Dashboard, Settings). Amber highlights are workflow features (Tasks, Jobs, Store, Channels).",
       "focusDirectory": "src/pages",
       "colorMode": "fileTypes",
       "highlightLayers": [
@@ -48,7 +48,7 @@
     {
       "id": "frontend-lib",
       "title": "Frontend Core Libraries",
-      "description": "The src/lib/ directory contains 17 utility modules that power the frontend. gateway.ts is the WebSocket client for real-time OpenClaw communication. auth.ts handles OAuth flows and API key management. taskBoard.ts manages the task/job data model. vault.ts provides encrypted credential storage. integrations.ts handles plugin lifecycle. buildProfile.ts controls the two build modes: 'local' (bring-your-own-key) and 'managed' (hosted features with Supabase auth).",
+      "description": "17 utility modules powering the frontend. Purple highlights are the WebSocket gateway for real-time OpenClaw communication. Red highlights handle auth, encrypted credential storage, and build profile switching.",
       "focusDirectory": "src/lib",
       "colorMode": "fileTypes",
       "highlightLayers": [
@@ -81,7 +81,7 @@
     {
       "id": "rust-backend",
       "title": "Rust Backend (Tauri)",
-      "description": "The src-tauri/ directory contains the Rust backend. commands.rs (~15,500 lines) defines 150+ Tauri command endpoints covering runtime management, gateway control, authentication, browser automation, terminal access, skill scanning, and workspace file operations. runtime.rs (~4,100 lines) abstracts platform differences across macOS (Colima), Linux (Docker), and Windows (WSL). lib.rs initializes the app with encrypted storage (Stronghold), auto-updater, and event handlers.",
+      "description": "The Rust backend. commands.rs defines 150+ Tauri IPC endpoints. runtime.rs abstracts platform differences across macOS, Linux, and Windows. lib.rs initializes the app with encrypted storage and event handlers.",
       "focusDirectory": "src-tauri/src",
       "colorMode": "fileTypes",
       "highlightLayers": [
@@ -102,7 +102,7 @@
     {
       "id": "container-runtime",
       "title": "Sandboxed OpenClaw Runtime",
-      "description": "The openclaw-runtime/ directory defines the isolated container where OpenClaw actually runs. The Dockerfile builds a hardened environment with a non-root user, read-only root filesystem, Node.js 22, Python 3, and Patchright Chromium for browser automation. entrypoint.sh orchestrates skill installation and gateway startup. The browser-service/ subdirectory provides a sidecar for web automation with headless rendering support.",
+      "description": "The isolated container where OpenClaw runs. Hardened Dockerfile with non-root user and read-only filesystem. entrypoint.sh manages skill installation and gateway startup. browser-service/ provides headless browser automation.",
       "focusDirectory": "openclaw-runtime",
       "colorMode": "fileTypes",
       "highlightLayers": [
@@ -123,14 +123,14 @@
     {
       "id": "build-scripts",
       "title": "Build & Deployment Scripts",
-      "description": "The scripts/ directory contains 30+ shell scripts for building, bundling, and deploying Entropic across platforms. dev-runtime.sh manages the local Colima VM for development. build-openclaw-runtime.sh builds the container image. bundle-runtime.sh packages the runtime for distribution. create-macos-dmg.sh and sign-notarize-macos.sh handle macOS packaging and code signing. The .github/workflows/ directory has CI/CD pipelines for releases across macOS, Linux, and Windows.",
+      "description": "30+ shell scripts for building, bundling, and deploying across macOS, Linux, and Windows. CI/CD pipelines in .github/workflows/ handle releases for all platforms.",
       "focusDirectory": "scripts",
       "colorMode": "fileTypes"
     },
     {
       "id": "configuration",
       "title": "Configuration & Build Profiles",
-      "description": "Entropic supports two build profiles: 'local' (default, contributor-friendly, bring-your-own API keys) and 'managed' (official releases with Supabase auth, billing, and auto-updates). Key config files include tauri.conf.json for production Tauri settings, vite.config.ts for the frontend bundler, and Cargo.toml for Rust dependencies. The docs/ directory contains architecture specs, roadmaps, and security documentation.",
+      "description": "Two build profiles: 'local' (bring-your-own keys) and 'managed' (hosted auth and billing). Indigo highlights are key config files. Pink highlights the docs/ directory with architecture specs and roadmaps.",
       "focusDirectory": "",
       "colorMode": "fileTypes",
       "highlightLayers": [
