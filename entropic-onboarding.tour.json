@@ -7,7 +7,7 @@
     {
       "id": "overview",
       "title": "The Big Picture",
-      "description": "Entropic is a desktop AI workspace that runs OpenClaw in an isolated Docker container rather than executing commands directly on your machine. The codebase follows a layered architecture: a React/TypeScript frontend communicates through Tauri's IPC bridge to a Rust backend, which orchestrates a containerized OpenClaw runtime. Key top-level directories include src/ (frontend), src-tauri/ (backend), openclaw-runtime/ (container definition), and scripts/ (build tooling).",
+      "description": "Entropic is a desktop AI workspace that runs OpenClaw in an isolated Docker container rather than executing commands directly on your machine. The codebase follows a layered architecture: a React and TypeScript frontend communicates through Tauri's IPC bridge to a Rust backend, which orchestrates a containerized OpenClaw runtime.",
       "focusDirectory": "",
       "colorMode": "fileTypes"
     },
