@@ -162,7 +162,7 @@
     {
       "id": "explore",
       "title": "Start Exploring",
-      "description": "You now have an overview of Entropic's architecture: React frontend pages and libraries in src/, Rust backend commands and runtime management in src-tauri/, the sandboxed OpenClaw container in openclaw-runtime/, and build tooling in scripts/. The codebase emphasizes security through isolation, cross-platform support, and a clean separation between the desktop shell and the AI runtime. Dive into any area that interests you!",
+      "description": "You now have an overview of Entropic's architecture across its four main layers: the React frontend, the Rust backend, the sandboxed OpenClaw container, and the build tooling. The codebase emphasizes security through isolation, cross-platform support, and a clean separation between the desktop shell and the AI runtime. Dive into any area that interests you!",
       "focusDirectory": "",
       "colorMode": "fileTypes"
     }
