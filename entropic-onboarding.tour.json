@@ -123,7 +123,7 @@
     {
       "id": "build-scripts",
       "title": "Build & Deployment Scripts",
-      "description": "30+ shell scripts for building, bundling, and deploying across macOS, Linux, and Windows. CI/CD pipelines in .github/workflows/ handle releases for all platforms.",
+      "description": "Over thirty shell scripts for building, bundling, and deploying across macOS, Linux, and Windows. GitHub Actions workflows handle CI and releases for all platforms.",
       "focusDirectory": "scripts",
       "colorMode": "fileTypes"
     },
