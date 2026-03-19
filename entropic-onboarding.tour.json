@@ -81,7 +81,7 @@
     {
       "id": "rust-backend",
       "title": "Rust Backend (Tauri)",
-      "description": "The Rust backend. commands.rs defines 150+ Tauri IPC endpoints. runtime.rs abstracts platform differences across macOS, Linux, and Windows. lib.rs initializes the app with encrypted storage and event handlers.",
+      "description": "The Rust backend. commands.rs defines over 150 Tauri IPC endpoints. runtime.rs abstracts platform differences across macOS, Linux, and Windows. lib.rs initializes the app with encrypted storage and event handlers.",
       "focusDirectory": "src-tauri/src",
       "colorMode": "fileTypes",
       "highlightLayers": [
