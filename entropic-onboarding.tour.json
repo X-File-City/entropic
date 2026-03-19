@@ -14,7 +14,7 @@
     {
       "id": "frontend-pages",
       "title": "Frontend Pages",
-      "description": "14 React page components built with Tailwind and Vite. Blue highlights are the core experience (Chat, Dashboard, Settings). Amber highlights are workflow features (Tasks, Jobs, Store, Channels).",
+      "description": "The frontend has fourteen React page components built with Tailwind and Vite. Blue highlights are the core experience (Chat, Dashboard, Settings). Amber highlights are workflow features (Tasks, Jobs, Store, Channels).",
       "focusDirectory": "src/pages",
       "colorMode": "fileTypes",
       "highlightLayers": [
